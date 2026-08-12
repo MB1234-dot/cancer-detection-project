@@ -57,14 +57,35 @@ edited out, because the second one is more informative than the first.
      to the runner-up was distinguishable from noise, and a naive
      significance test on repeated-k-fold scores is anti-conservative
      because the folds aren't independent.
-5. **This version:** all three findings verified by independent reproduction
-   (not just accepted), then fixed. See below for what changed and why.
+5. **Round-one fixes:** all three findings verified by independent
+   reproduction (not just accepted), then fixed.
+6. **Independent external adversarial review, round two** — same reviewer,
+   this time given the full repo (including `train.py`/`evaluate.py`, which
+   round one didn't have), plus mutation testing (deliberately
+   reintroducing each fixed bug to check whether the test suite actually
+   catches it, not just whether it passes). Confirmed all three round-one
+   fixes were real and that the new leakage-regression test genuinely fails
+   when the leak is reintroduced — but also found that **no test protected
+   the VIF fix** (all 17 tests kept passing with `add_constant` removed
+   again), that the threshold-stability report's seed categories didn't
+   add up to 200 and silently dropped the worst-case bucket, and, most
+   importantly, that **the 16-feature model shipped as a result of round
+   one's fix is measurably worse than the 30-feature model on recall,
+   precision, and ROC-AUC** — a real cost that the untuned pre-tuning
+   comparison in `feature_analysis.py` doesn't measure and can't see.
+7. **Round-two fixes (this version):** a VIF mutation-tested regression
+   test, corrected stability-report accounting, a proper significance test
+   replacing the old bare `delta > -0.01` rule, and a new post-hoc script
+   that measures — on the actual shipped model — both the real performance
+   cost and a real, previously-unmeasured explanation-stability benefit of
+   the reduced feature set. See below.
 
 If you're evaluating this repo, the honest thing to say about it is not
 "rigorous ML pipeline." It's "a pipeline that made real mistakes, had them
-caught by adversarial review rather than self-review, and was fixed with the
-fixes checked back in." That's a different, more defensible claim, and it's
-the one this README is trying to actually support rather than assert.
+caught by adversarial review rather than self-review twice in a row, and was
+fixed with the fixes checked back in and mutation-tested." That's a
+different, more defensible claim, and it's the one this README is trying to
+actually support rather than assert.
 
 ## What changed after external review
 
@@ -77,9 +98,16 @@ for the full before/after) and the iterative selection now drops 14 features
 instead of 23, retaining 16 instead of 7 — critically, `mean radius`
 (the single feature the buggy version called the worst offender) now
 survives, because it was never actually the problem; the missing intercept
-was. The corrected reduced set costs only −0.0031 average precision
-(0.9934 → 0.9903, well within one CV standard deviation), so **the model
-now trains on the VIF-corrected 16-feature set**, not the full 30. The
+was. The corrected reduced set costs −0.0031 average precision on an
+**untuned baseline model** (0.9934 → 0.9903) — round two's decision rule
+here was a bare `delta > -0.01` inequality with no notion of statistical
+power, which round-two review correctly flagged as the most important
+remaining issue. It's since been replaced with a proper Nadeau-Bengio
+significance test (`nadeau_bengio_p=0.336`, not significant), but see
+**"Round two"** below: that test only covers this untuned, pre-tuning
+comparison, and a separate post-hoc measurement against the *actual*
+shipped model found a real trade-off this comparison can't see. **The model
+trains on the VIF-corrected 16-feature set**, not the full 30. The
 comparison estimator is explicitly labeled `baseline_*` in
 `vif_report.json` and documented as an untuned reference model (feature
 selection has to happen before hyperparameter tuning in a leakage-safe
@@ -99,8 +127,16 @@ trusting one draw:
 Threshold across 200 seeds: median=0.568, range=[0.0005, 0.983]
 Mean test recall/precision -- default: 0.952/0.948, tuned: 0.943/0.922
 Tuning improved recall in 47/200 seeds, left it unchanged in 80/200,
-  and failed to help while costing precision in the remaining 73/200.
+  and made recall WORSE in 73/200 (mean loss 5.2pp, worst case 16.7pp).
+  47 + 80 + 73 = 200 -- every seed accounted for.
 ```
+
+*(Round two found the original version of this report didn't partition:
+its three categories summed to 163/200 and silently dropped the worst-case
+bucket — exactly the seeds where tuning hurt most. Fixed in
+`stability_analysis.py`; the "made recall worse" bucket and its damage are
+now first-class fields in `threshold_stability_report.json`, not an
+implied remainder.)*
 
 **Threshold tuning does not help here, on average, and is not stable.**
 The single seed-42 result makes this starkest: the validation-tuned
@@ -146,7 +182,79 @@ rather than a silent surprise. A new regression test
 exercises `evaluate.main()` — the actual historically-buggy entry point,
 not just the pure `choose_threshold()` function — by corrupting the on-disk
 test set with random labels and shuffled features and asserting the chosen
-threshold is unchanged. 17 tests total, all passing.
+threshold is unchanged. 17 tests total, all passing at the time (round one).
+
+## Round two: what a second, deeper review found — and what changed
+
+Round two gave the same external reviewer the full repo (round one didn't
+have `train.py`/`evaluate.py`) and asked it to **mutation-test** the fixes —
+deliberately reintroduce each bug and check whether the test suite actually
+fails, not just whether it currently passes. Reproduced independently here:
+
+- **The leakage regression test genuinely works.** Reintroducing the
+  original test-set leak makes `TestNoLeakage::test_threshold_unaffected_by_test_set_corruption`
+  fail, as designed.
+- **The VIF fix had zero test coverage.** Reintroducing the missing
+  `add_constant` bug (removing the intercept) left all 17 existing tests
+  passing — nothing caught it. **Fixed:** a new test,
+  `TestVIFCorrectness::test_vif_uses_an_intercept`, was added and verified
+  the same way — with the bug reintroduced, it fails with the exact known
+  buggy value (`mean radius` VIF = 63,499.3); with the fix in place, it
+  passes. 18 tests total now, all passing.
+- **The threshold-stability report's categories didn't partition.**
+  Described above — fixed.
+- **The most important finding:** on the *actual tuned, deployed* model
+  (not the untuned baseline `feature_analysis.py` uses to make its
+  pre-tuning decision), the reviewer measured the 16-feature model as
+  significantly worse than the 30-feature model on recall, precision, and
+  ROC-AUC. That's a real, previously unmeasured cost of the VIF-selection
+  decision — the untuned comparison's "no meaningful cost" finding does
+  not extend to the model that's actually shipped, and the README
+  shouldn't have implied that it did.
+
+**Fixed with `src/feature_tradeoff_analysis.py`** (run after `train.py`):
+a new script that fits the *actual* tuned hyperparameters (`C=8.859`,
+`class_weight=balanced`) on both the 16- and 30-feature sets across 100
+independent splits, and measures two things the earlier comparison
+couldn't: the real performance cost, and — something the reviewer noticed
+but didn't quantify — the SHAP explanation-stability *benefit* of the
+smaller, less collinear feature set. Reproducing this measurement here
+(`models/feature_tradeoff_report.json`):
+
+```
+recall:    full=0.9526  reduced=0.9514  diff=-0.0012  (paired t-test p=0.556, not significant)
+precision: full=0.9484  reduced=0.9454  diff=-0.0030  (paired t-test p=0.361, not significant)
+roc_auc:   full=0.9893  reduced=0.9893  diff=+0.0000  (paired t-test p=0.895, not significant)
+
+SHAP top-3 feature-set consensus across 100 splits:
+  30-feature model:  6/100 splits match the modal top-3 set (61 distinct sets seen)
+  16-feature model:  82/100 splits match the modal top-3 set (7 distinct sets seen)
+```
+
+**This independent reproduction did NOT find a statistically significant
+performance cost** in this environment (pinned to the dependency versions
+in `requirements.lock`) — which does not match round two's own claim of a
+significant cost (p<1e-6). That's a genuine, unresolved discrepancy, not a
+result to quietly prefer: it's flagged here rather than smoothed over,
+and the most likely explanation is a methodology or dependency-version
+difference (see the unpinned-dependency limitation below) rather than
+either side being wrong. What *did* reproduce cleanly, and by a wide
+margin, is the SHAP stability finding: the 16-feature model's top-3
+explanation is consistent across resampled training data roughly 14x more
+often than the 30-feature model's (82% vs 6%). **The honest framing is a
+trade, not a free lunch:** the reduced feature set buys a much more
+trustworthy explanation, a real recall/precision/AUC cost may or may not
+be part of that price depending on environment, and this project ships the
+reduced set for the explainability benefit while saying exactly that
+instead of "no meaningful cost."
+
+**Also fixed:** the untuned pre-tuning decision rule in
+`feature_analysis.py` no longer uses a bare `delta > -0.01` inequality —
+it now runs the same Nadeau-Bengio significance test used for model-family
+selection (`nadeau_bengio_p=0.336`, not significant, see above), with an
+explicit code comment and log line pointing at
+`feature_tradeoff_analysis.py` so nobody mistakes that untuned check for a
+guarantee about the deployed model.
 
 ## Results (post-fix)
 
@@ -179,9 +287,34 @@ Test set: 114 patients, 42 malignant. See `models/results_summary.json`,
 | Features dropped (VIF ≥ 10) | 23 | 14 |
 | Features retained | 7 (all "error" features + 1 "worst") | 16 (spans mean/error/worst) |
 | Does `mean radius` survive? | No (called the #1 offender) | **Yes** |
-| Accuracy cost of pruning | −0.0159 AP (rejected: kept full 30) | −0.0031 AP (accepted: **now the deployed feature set**) |
+| Accuracy cost of pruning (untuned baseline) | −0.0159 AP (rejected: kept full 30) | −0.0031 AP, p=0.336 not significant (accepted: **now the deployed feature set**) |
 
-Full detail in `models/vif_report.json`.
+Full detail in `models/vif_report.json`. The "accuracy cost" row above is
+the untuned, pre-tuning check only — see the next section for what the
+actual tuned model gives up and gains.
+
+### Feature-set trade-off, measured on the real deployed model
+
+`src/feature_tradeoff_analysis.py` (added after round-two review) fits the
+actual tuned hyperparameters on both feature sets across 100 splits:
+
+| | 30 features (full) | 16 features (deployed) |
+|---|---|---|
+| Test recall | 95.26% | 95.14% (diff not significant, p=0.556) |
+| Test precision | 94.84% | 94.54% (diff not significant, p=0.361) |
+| Test ROC-AUC | 0.9893 | 0.9893 (diff not significant, p=0.895) |
+| SHAP top-3 consensus (100 splits) | 6% | **82%** |
+
+In this environment, the performance difference is not statistically
+significant — which does not match round-two review's own reproduction (it
+found a significant cost, p<1e-6). That discrepancy is unresolved and
+stated plainly rather than picked over silently; the leading suspect is a
+dependency-version or methodology difference (see Limitations). What's
+unambiguous is the explanation-stability benefit: the deployed model's
+top-3 SHAP features land on the same 3 features in 82/100 resampled splits,
+versus 6/100 for the full feature set — collinearity in the full set lets
+credit shift almost arbitrarily between near-duplicate features run to run.
+Full detail in `models/feature_tradeoff_report.json`.
 
 ### What drives the model
 
@@ -196,20 +329,27 @@ mattered," not as precise credit to one specific feature. See
 
 ## Engineering practices
 
-- **Tests** (`tests/`, 17 passing): data integrity, split non-overlap and
+- **Tests** (`tests/`, 18 passing): data integrity, split non-overlap and
   stratification, split reproducibility, model output shape/range,
   determinism, threshold-selection edge cases (including the corrected
-  min-statistic documentation test), and a direct regression test against
-  the original leakage bug that exercises the real entry point.
+  min-statistic documentation test), a direct regression test against the
+  original leakage bug that exercises the real entry point, and a
+  mutation-tested regression test for the VIF intercept fix (added after
+  round-two review found this was the one bug with zero test coverage;
+  verified the same way round two verified it — reintroducing the bug
+  makes the new test fail with the exact known buggy value).
 - **CI** (`.github/workflows/ci.yml`): runs the full pipeline (through
-  `stability_analysis.py` and `shap_explain.py`) and test suite on every
-  push, then builds the Docker image and smoke-tests that the container
-  actually serves a healthy app.
+  `stability_analysis.py`, `feature_tradeoff_analysis.py`, and
+  `shap_explain.py`) and test suite on every push, then builds the Docker
+  image and smoke-tests that the container actually serves a healthy app.
 - **Statistical rigor beyond point estimates**
-  (`src/stats_utils.py`, `src/stability_analysis.py`): Nadeau-Bengio
-  corrected significance testing for model selection; a 200-seed stability
-  sweep for threshold selection, in addition to the bootstrap CIs on the
-  final test metrics.
+  (`src/stats_utils.py`, `src/stability_analysis.py`,
+  `src/feature_tradeoff_analysis.py`): Nadeau-Bengio corrected significance
+  testing for model selection AND for the feature-selection decision (no
+  more bare inequality thresholds); a 200-seed stability sweep for
+  threshold selection that now correctly partitions every seed; a 100-split
+  paired-test measurement of what the deployed feature set actually costs
+  and gains on the real, tuned model.
 - **Config centralization, single source of truth for data, containerized
   build** — as before; see `src/config.py`, `src/data.py`, `Dockerfile`.
   *Docker caveat, unchanged and still true:* written and reviewed carefully
@@ -218,27 +358,37 @@ mattered," not as precise credit to one specific feature. See
   is designed to build and smoke-test the image on every push — treat that
   as "designed to verify" until you've seen a green run in your own Actions
   tab, not as an assertion that it already has.
+- **Pinned dependency snapshot** (`requirements.lock`, generated via
+  `pip freeze`): round two noted that `requirements.txt`'s `>=`-only
+  constraints make some quoted statistics environment-dependent (a
+  Nadeau-Bengio p-value that differs between sklearn versions, for
+  example). `requirements.lock` records the exact versions this README's
+  numbers were produced with (`pip install -r requirements.lock` for an
+  exact reproduction); `requirements.txt` is left loose for normal
+  development/CI use.
 
 ## Project structure
 
 ```
 ├── src/
-│   ├── config.py             # central config, incl. corrected VIF/target-recall notes
-│   ├── data.py                # load_raw, make_splits, load_splits
-│   ├── stats_utils.py          # Nadeau-Bengio corrected significance test
-│   ├── eda.py                  # exploratory analysis
-│   ├── split_data.py           # train/val/test split (the original leakage fix)
-│   ├── feature_analysis.py     # VIF multicollinearity analysis (intercept-corrected)
-│   ├── train.py                 # RandomizedSearchCV + significance-tested model selection
-│   ├── evaluate.py              # threshold on val, final report + bootstrap CI on test
-│   ├── stability_analysis.py    # 200-seed threshold stability sweep
-│   └── shap_explain.py          # global + per-patient SHAP explanations
+│   ├── config.py                    # central config, incl. corrected VIF/target-recall notes
+│   ├── data.py                       # load_raw, make_splits, load_splits
+│   ├── stats_utils.py                 # Nadeau-Bengio corrected significance test
+│   ├── eda.py                         # exploratory analysis
+│   ├── split_data.py                  # train/val/test split (the original leakage fix)
+│   ├── feature_analysis.py            # VIF multicollinearity analysis (intercept-corrected, significance-tested decision)
+│   ├── train.py                        # RandomizedSearchCV + significance-tested model selection
+│   ├── evaluate.py                     # threshold on val, final report + bootstrap CI on test
+│   ├── stability_analysis.py           # 200-seed threshold stability sweep (partition-corrected)
+│   ├── feature_tradeoff_analysis.py    # post-hoc: real cost + SHAP-stability benefit of the deployed feature set
+│   └── shap_explain.py                 # global + per-patient SHAP explanations
 ├── tests/
 │   ├── test_data.py             # split correctness, stratification, reproducibility
-│   └── test_pipeline.py          # model contracts, threshold edge cases, leakage regression test
+│   └── test_pipeline.py          # model contracts, threshold edge cases, VIF + leakage regression tests
 ├── app/app.py                    # Streamlit demo (defaults to the recommended threshold)
 ├── .github/workflows/ci.yml
 ├── Dockerfile
+├── requirements.lock              # exact pinned versions this README's numbers were produced with
 ├── AI_REVIEW_PACKAGE.md           # the package sent for external adversarial review
 ```
 
@@ -246,7 +396,7 @@ mattered," not as precise credit to one specific feature. See
 
 ```bash
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt   # or requirements.lock for an exact reproduction
 
 python3 -m src.eda
 python3 -m src.split_data
@@ -254,9 +404,10 @@ python3 -m src.feature_analysis
 python3 -m src.train
 python3 -m src.evaluate
 python3 -m src.stability_analysis
+python3 -m src.feature_tradeoff_analysis
 python3 -m src.shap_explain
 
-pytest tests/ -v                  # 17 tests
+pytest tests/ -v                  # 18 tests
 
 streamlit run app/app.py          # run from project root
 ```
@@ -293,10 +444,33 @@ cohort.
 - Cell-morphology features only, not a full pathology workup.
 - Docker image unverified in a real build environment as of this commit
   (network-restricted dev sandbox); CI is the real check, once run.
-- This README, and the analysis behind it, already went through one round
-  of external adversarial review and correction. That doesn't mean it's
-  now correct — it means it's been checked once. Treat any specific claim
-  you're relying on as something to re-verify, not as settled.
+- `TARGET_RECALL=0.95` still doesn't operationally mean 0.95: with 34
+  validation positives, the nearest achievable levels are 32/34≈0.941,
+  33/34≈0.971, and 34/34=1.0 — `evaluate.py` now logs this explicitly and
+  records the actually-achieved validation recall in `eval_summary.json`,
+  but the underlying degeneracy (a small positive count makes threshold
+  selection close to an order statistic) is reduced, not eliminated. See
+  `stability_analysis.py`'s 200-seed sweep for the practical consequence.
+- The 200-seed stability sweep and the 100-split feature trade-off analysis
+  both hold the feature set and hyperparameters fixed at whatever the
+  single seed-42 run of `feature_analysis.py`/`train.py` happened to
+  choose (re-running full feature selection and hyperparameter search per
+  seed was judged too expensive for a 364-row training set to repeat
+  hundreds of times). Both are therefore a **lower bound** on true
+  end-to-end instability, not the complete picture.
+- The independent reproduction of round two's feature-tradeoff finding
+  (see "Round two" above) did NOT find a statistically significant
+  performance cost in this pinned environment, contradicting round two's
+  own claim of p<1e-6. This discrepancy is unresolved — most likely a
+  dependency-version or methodology difference — and is stated here
+  rather than silently resolved in either direction.
+- This README, and the analysis behind it, has now gone through two rounds
+  of external adversarial review and correction, including mutation
+  testing in round two. That doesn't mean it's now correct — it means it's
+  been checked twice, and the second check found real problems the first
+  one missed (an untested bug, a broken report, an unmeasured trade-off).
+  Treat any specific claim you're relying on as something to re-verify,
+  not as settled, and assume a third review would likely find more.
 
 ## Possible next steps
 
@@ -307,3 +481,10 @@ cohort.
   drift monitoring, alongside the Streamlit demo.
 - Explore an LLM/RAG layer over medical literature (e.g. PubMed abstracts)
   as a separate, distinct project.
+- Resolve the unreproduced feature-tradeoff significance discrepancy
+  (this repo's environment vs. round two's) by pinning both sides to the
+  same `requirements.lock` and re-running the comparison.
+- Re-derive `TARGET_RECALL` from the validation positive count at runtime
+  (or drop the target-recall abstraction entirely in favor of directly
+  reasoning about achievable order statistics) instead of a hardcoded
+  value that doesn't mean what it says.

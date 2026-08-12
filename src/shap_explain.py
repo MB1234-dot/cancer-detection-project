@@ -1,15 +1,20 @@
 """
 Explainability: SHAP (SHapley Additive exPlanations).
 
-Read this alongside models/vif_report.json: the multicollinearity analysis
-found severe correlation among several feature groups (radius/perimeter/area
-correlate at 0.97-1.00; concavity/concave-points correlate above 0.85) but
-found that removing them costs real predictive performance, so the full
-30-feature model is what's deployed. That means SHAP attributions here
-should be read at the level of "this cluster of related measurements pushed
-the prediction," not "this exact feature, and only this one, mattered" --
-for a linear model, credit within a highly correlated cluster can shift
-between near-duplicate features without changing the prediction at all.
+Read this alongside models/vif_report.json and models/feature_tradeoff_report.json:
+the multicollinearity analysis found severe correlation among several
+feature groups (radius/perimeter/area correlate at 0.97-1.00; concavity/
+concave-points correlate above 0.85) and drops the worst offenders,
+shipping a 16-feature model rather than the full 30. That decision has a
+real, measured cost on recall/precision/AUC (see feature_tradeoff_report.json)
+and a real, measured benefit in exactly the thing this script produces:
+explanation stability. Even after dropping the worst multicollinearity,
+some correlated structure remains among the retained features, so SHAP
+attributions here should still be read at the level of "this cluster of
+related measurements pushed the prediction," not "this exact feature, and
+only this one, mattered" -- for a linear model, credit within a correlated
+cluster can shift between near-duplicate features without changing the
+prediction at all.
 
 Run: python3 -m src.shap_explain   (from project root)
 """

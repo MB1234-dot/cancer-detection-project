@@ -1,5 +1,17 @@
 # Review package: Breast Mass Malignancy Risk Estimator
 
+> **STATUS NOTE (added after round two):** this package reflects the state
+> of the project at the time of the FIRST external review ("round one") --
+> the numbers and code excerpts below are pre-fix. Round one found three
+> real bugs (documented in `README.md`'s "Process" and "What changed after
+> external review" sections); those were fixed, then round two (given full
+> repo access, not this package) found further issues, which are documented
+> in `README.md`'s "Round two" section along with what was fixed in
+> response. If you're doing a fresh review, `README.md` and the live repo
+> are the current source of truth -- this file is kept as a historical
+> record of what round one was actually shown, not as an up-to-date
+> description of the project.
+
 You are being asked to independently review this project for AI-generated
 "slop" — confident-sounding output that doesn't hold up under scrutiny:
 unverified claims, cosmetic rigor with no substance, internal

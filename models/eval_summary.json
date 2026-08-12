@@ -2,6 +2,14 @@
   "n_validation": 91,
   "n_test": 114,
   "n_malignant_test": 42,
+  "n_malignant_validation": 34,
+  "target_recall_config": 0.95,
+  "achievable_recall_values_near_target": [
+    0.9412,
+    0.9706,
+    1.0
+  ],
+  "actual_validation_recall_at_tuned_threshold": 0.9706,
   "default_threshold": 0.5,
   "tuned_threshold": 0.9553,
   "test_metrics_default_threshold": {

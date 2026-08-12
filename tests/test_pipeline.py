@@ -124,6 +124,42 @@ class TestBootstrapCI:
             assert 0.0 <= lower <= upper <= 1.0
 
 
+class TestVIFCorrectness:
+    """Regression test for the VIF intercept bug found by external
+    adversarial review (round one): `compute_vif` originally called
+    `variance_inflation_factor` without `add_constant`, which forces the
+    auxiliary regression through the origin and inflates every VIF by 1-2
+    orders of magnitude for a dataset where every feature is strictly
+    positive (true here -- WDBC measurements are all physical quantities).
+    That bug reproduced exactly (mean radius VIF=63499.29, worst radius
+    VIF=8871.98) and caused the iterative selector to strip the entire
+    high-signal "mean"/"worst" feature block before touching the weakly
+    correlated "error" block.
+
+    Round two's mutation-testing pass reintroduced the bug (removed
+    `add_constant`) and found that all of this project's other tests still
+    passed -- nothing here caught it. This test exists specifically to close
+    that gap: with an intercept, `mean radius`'s VIF should be a normal,
+    double-digit-or-low-hundreds number (multicollinear with perimeter/area,
+    but not by three orders of magnitude); without one, it blows up into the
+    tens of thousands. Asserting a generous upper bound below 10,000 fails
+    loudly if `add_constant` is ever removed again.
+    """
+
+    def test_vif_uses_an_intercept(self):
+        from src.feature_analysis import compute_vif
+
+        train_df, _, _ = load_splits()
+        feats = [c for c in train_df.columns if c != TARGET_COL]
+        vif = compute_vif(train_df[feats])
+        assert vif["mean radius"] < 10_000, (
+            f"mean radius VIF={vif['mean radius']:.1f} -- this magnitude "
+            f"matches the known bug where add_constant is missing from "
+            f"compute_vif (intercept-less VIF regression). Expected a "
+            f"normal double/triple-digit VIF, not tens of thousands."
+        )
+
+
 class TestNoLeakage:
     """Regression test for the ORIGINAL bug this whole project was rebuilt
     to fix: evaluate.py used to select its threshold by sweeping the test

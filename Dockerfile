@@ -21,7 +21,9 @@ RUN python3 -m src.eda \
     && python3 -m src.feature_analysis \
     && python3 -m src.train \
     && python3 -m src.evaluate \
-    && python3 -m src.stability_analysis
+    && python3 -m src.stability_analysis \
+    && python3 -m src.feature_tradeoff_analysis \
+    && python3 -m src.shap_explain
 
 EXPOSE 8501
 

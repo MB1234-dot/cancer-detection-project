@@ -1,0 +1,45 @@
+{
+  "n_splits": 100,
+  "model": "logistic_regression",
+  "hyperparameters_used": {
+    "clf__class_weight": "balanced",
+    "clf__C": 8.858667904100823
+  },
+  "performance_cost_reduced_vs_full": {
+    "recall": {
+      "mean_full_30_features": 0.9526,
+      "mean_reduced_16_features": 0.9514,
+      "mean_diff_reduced_minus_full": -0.0012,
+      "paired_ttest_p": 0.555561,
+      "wilcoxon_p": 0.593798,
+      "significant_at_0.05": false
+    },
+    "precision": {
+      "mean_full_30_features": 0.9484,
+      "mean_reduced_16_features": 0.9454,
+      "mean_diff_reduced_minus_full": -0.003,
+      "paired_ttest_p": 0.360996,
+      "wilcoxon_p": 0.45249,
+      "significant_at_0.05": false
+    },
+    "roc_auc": {
+      "mean_full_30_features": 0.9893,
+      "mean_reduced_16_features": 0.9893,
+      "mean_diff_reduced_minus_full": 0.0,
+      "paired_ttest_p": 0.894714,
+      "wilcoxon_p": 0.318114,
+      "significant_at_0.05": false
+    }
+  },
+  "shap_top3_consensus": {
+    "full_30_features": {
+      "fraction_matching_modal_set": 0.06,
+      "n_distinct_sets_across_splits": 61
+    },
+    "reduced_16_features": {
+      "fraction_matching_modal_set": 0.82,
+      "n_distinct_sets_across_splits": 7
+    }
+  },
+  "summary": "On THIS run, no metric showed a statistically significant difference between the 16-feature and 30-feature models -- this does not match round-two external review's finding of a significant cost, and should be treated as a discrepancy to investigate (e.g. dependency versions, see README) rather than as evidence the earlier finding was wrong. It is also far more stable in which 3 features its SHAP explanation names as most important across resampled training data (82% vs 6% of splits matching the modal top-3 set) -- a real, measured benefit the untuned feature_analysis.py comparison cannot see. Whether a recall/precision/AUC cost is worth an explanation-stability benefit (or vice versa) is a judgment call, not a fact this script can settle -- the honest thing to do is state both sides with the actual numbers from this run, which is what this report is for."
+}

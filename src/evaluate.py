@@ -89,6 +89,15 @@ def main() -> None:
     y_proba_test = model.predict_proba(X_test)[:, 1]
 
     # --- 1. choose threshold on VALIDATION only ---
+    n_pos_val = int(y_val.sum())
+    achievable = sorted({round(k / n_pos_val, 4) for k in range(n_pos_val - 2, n_pos_val + 1)})
+    logger.info(
+        "Validation set has %d malignant cases -> achievable recall values near "
+        "the target are multiples of 1/%d, e.g. %s. TARGET_RECALL=%.2f will "
+        "resolve to whichever of those is the smallest value >= %.2f, which is "
+        "usually NOT exactly %.2f -- see config.py's note on this.",
+        n_pos_val, n_pos_val, achievable, config.TARGET_RECALL, config.TARGET_RECALL, config.TARGET_RECALL,
+    )
     tuned_threshold = choose_threshold(y_val, y_proba_val, config.TARGET_RECALL)
     logger.info("Chosen operating threshold (from validation set, target recall >= %.2f): %.3f",
                 config.TARGET_RECALL, tuned_threshold)
@@ -156,10 +165,15 @@ def main() -> None:
     y_pred_default = (y_proba_test >= 0.5).astype(int)
     y_pred_tuned = (y_proba_test >= tuned_threshold).astype(int)
 
+    val_recall_achieved = float(recall_score(y_val, (y_proba_val >= tuned_threshold).astype(int)))
     eval_summary = {
         "n_validation": len(val_df),
         "n_test": len(test_df),
         "n_malignant_test": int(y_test.sum()),
+        "n_malignant_validation": n_pos_val,
+        "target_recall_config": config.TARGET_RECALL,
+        "achievable_recall_values_near_target": achievable,
+        "actual_validation_recall_at_tuned_threshold": round(val_recall_achieved, 4),
         "default_threshold": 0.5,
         "tuned_threshold": round(tuned_threshold, 4),
         "test_metrics_default_threshold": {

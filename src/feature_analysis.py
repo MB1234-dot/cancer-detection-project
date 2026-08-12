@@ -28,6 +28,7 @@ fixed once for threshold selection.
 Run: python3 -m src.feature_analysis   (from project root)
 """
 import json
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,6 +41,7 @@ from statsmodels.tools.tools import add_constant
 
 from src import config
 from src.data import load_splits, TARGET_COL
+from src.stats_utils import nadeau_bengio_test
 
 logger = config.get_logger(__name__)
 
@@ -88,7 +90,7 @@ def iterative_vif_selection(X: pd.DataFrame, threshold: float):
     return remaining, drop_log
 
 
-def compare_full_vs_reduced(train_df: pd.DataFrame, all_features, selected_features) -> dict:
+def compare_full_vs_reduced(train_df: pd.DataFrame, all_features, selected_features) -> Tuple[dict, dict]:
     """Quick CV comparison: does dropping redundant features cost us accuracy?
 
     IMPORTANT CAVEAT (flagged by external review): this uses a fixed,
@@ -103,28 +105,37 @@ def compare_full_vs_reduced(train_df: pd.DataFrame, all_features, selected_featu
     circular. The result is a fair full-vs-reduced comparison for a generic,
     reasonably-regularized linear model, but it is NOT a guarantee that the
     specific deployed model (train.py's tuned C) responds to the reduced
-    feature set the same way. Result keys are named `baseline_*` throughout
-    to make that distinction visible instead of implying these numbers are
-    the shipped model's numbers.
+    feature set the same way -- see src/feature_tradeoff_analysis.py (run
+    after train.py) for a post-hoc, honest measurement of what the actual
+    shipped model gives up and gains. Result keys are named `baseline_*`
+    throughout to make that distinction visible instead of implying these
+    numbers are the shipped model's numbers.
+
+    Returns (summary_dict, raw_scores_dict) -- raw_scores_dict holds the
+    per-fold score arrays (same `cv` object -> same folds -> paired) so the
+    caller can run a proper significance test instead of eyeballing a bare
+    delta.
     """
     y = train_df[TARGET_COL]
     cv = RepeatedStratifiedKFold(
         n_splits=config.CV_SPLITS, n_repeats=config.CV_REPEATS, random_state=config.RANDOM_STATE
     )
     results = {}
+    raw_scores = {}
     for label, feats in [("baseline_full_30_features", all_features), ("baseline_vif_selected_features", selected_features)]:
         pipe = Pipeline([
             ("scaler", StandardScaler()),
             ("clf", LogisticRegression(max_iter=5000, random_state=config.RANDOM_STATE, class_weight="balanced")),
         ])
         scores = cross_val_score(pipe, train_df[feats], y, cv=cv, scoring=config.CV_SCORING, n_jobs=-1)
+        raw_scores[label] = scores
         results[label] = {
             "n_features": len(feats),
             "mean_average_precision": round(float(np.mean(scores)), 4),
             "std_average_precision": round(float(np.std(scores)), 4),
             "note": "untuned baseline (C=1.0), not the tuned deployed model",
         }
-    return results
+    return results, raw_scores
 
 
 def main() -> None:
@@ -144,7 +155,7 @@ def main() -> None:
     )
     logger.info("Retained %d features.", len(selected_features))
 
-    comparison = compare_full_vs_reduced(train_df, all_features, selected_features)
+    comparison, raw_scores = compare_full_vs_reduced(train_df, all_features, selected_features)
     logger.info("CV comparison (%s, higher is better):", config.CV_SCORING)
     for label, res in comparison.items():
         logger.info(
@@ -154,17 +165,41 @@ def main() -> None:
 
     delta = (comparison["baseline_vif_selected_features"]["mean_average_precision"]
              - comparison["baseline_full_30_features"]["mean_average_precision"])
+
+    # SIGNIFICANCE, not a bare "-0.01" threshold (flagged by round-two
+    # external review as the most important remaining issue: an arbitrary
+    # inequality with no notion of statistical power, unlike the
+    # Nadeau-Bengio-tested model-family choice in train.py). Same `cv`
+    # object -> same folds -> the two score arrays are properly paired.
+    n_test_per_fold = len(train_df) // config.CV_SPLITS
+    n_train_per_fold = len(train_df) - n_test_per_fold
+    t_stat, p_value = nadeau_bengio_test(
+        raw_scores["baseline_vif_selected_features"], raw_scores["baseline_full_30_features"],
+        n_train=n_train_per_fold, n_test=n_test_per_fold,
+    )
+    significant_cost = bool(p_value < 0.05 and delta < 0)
     logger.info(
-        "Delta from dropping collinear features: %+.4f average precision. "
-        "%s",
-        delta,
-        "No meaningful accuracy cost -- proceeding with the reduced, more "
-        "interpretable feature set." if delta > -0.01 else
-        "Meaningful accuracy cost detected -- keeping the full feature set "
-        "despite the multicollinearity (see README for reasoning)."
+        "Delta from dropping collinear features: %+.4f average precision "
+        "(Nadeau-Bengio corrected p=%.4f). %s",
+        delta, p_value,
+        "Cost is NOT statistically significant at this (untuned-baseline, "
+        "average-precision) stage -- proceeding with the reduced, more "
+        "interpretable feature set." if not significant_cost else
+        "Statistically significant accuracy cost detected -- keeping the "
+        "full feature set despite the multicollinearity (see README)."
+    )
+    logger.info(
+        "IMPORTANT: this significance test covers only the untuned-baseline "
+        "CV comparison used to make this upstream, pre-hyperparameter-tuning "
+        "decision. It is NOT a claim that the final tuned, deployed model is "
+        "unaffected -- run `python3 -m src.feature_tradeoff_analysis` after "
+        "train.py for a post-hoc measurement of what the actual shipped "
+        "model gives up (and gains in explanation stability) by using the "
+        "reduced feature set; that measurement found a real, significant "
+        "cost that this untuned check did not catch. See README."
     )
 
-    final_features = selected_features if delta > -0.01 else all_features
+    final_features = selected_features if not significant_cost else all_features
 
     report = {
         "vif_threshold": config.VIF_THRESHOLD,
@@ -173,8 +208,23 @@ def main() -> None:
         "selected_features_by_vif": selected_features,
         "cv_comparison": comparison,
         "delta_average_precision": round(float(delta), 4),
+        "nadeau_bengio_t": round(t_stat, 4),
+        "nadeau_bengio_p": round(p_value, 4),
+        "cost_statistically_significant": significant_cost,
         "final_decision": "reduced" if final_features is selected_features else "full",
         "final_features": final_features,
+        "caveat": (
+            "This decision is made BEFORE hyperparameter tuning, using an "
+            "untuned baseline model and average-precision as the CV metric "
+            "(unavoidable circularity: tuning requires a feature set to "
+            "already be chosen). It does not by itself establish that the "
+            "final tuned model is unaffected on other metrics (recall, "
+            "precision, ROC-AUC) -- see models/feature_tradeoff_report.json "
+            "(produced by src/feature_tradeoff_analysis.py, run after "
+            "train.py) for a post-hoc measurement against the real, shipped "
+            "model, including the explanation-stability benefit this "
+            "comparison cannot see."
+        ),
     }
     with open(config.VIF_REPORT_PATH, "w") as f:
         json.dump(report, f, indent=2)

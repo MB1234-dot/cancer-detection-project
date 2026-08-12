@@ -99,10 +99,30 @@ def main() -> None:
     recall_default = np.array([r["recall_default"] for r in seed_results])
     precision_default = np.array([r["precision_default"] for r in seed_results])
 
-    # accounting: compare recall first (the stated goal of tuning), ties broken by precision
-    improved = int(np.sum(recall_tuned > recall_default))
-    unchanged = int(np.sum(recall_tuned == recall_default))
-    worse_or_same_recall_lower_precision = int(np.sum((recall_tuned <= recall_default) & (precision_tuned < precision_default)))
+    # Accounting: partition ALL N_SEEDS seeds into exactly 3 mutually
+    # exclusive, collectively exhaustive buckets by comparing recall_tuned to
+    # recall_default (the stated goal of tuning). An earlier version of this
+    # report had a 3rd category ("did not help recall AND cost precision")
+    # that overlapped with the other two and left seeds unaccounted for
+    # (163/200 total) -- silently dropping exactly the worst-case seeds
+    # (tuning made recall WORSE) from the numbers anyone would read. Fixed:
+    # these three buckets sum to N_SEEDS by construction (recall_tuned is
+    # either >, ==, or < recall_default -- no other option).
+    recall_delta = recall_tuned - recall_default
+    improved_mask = recall_delta > 0
+    unchanged_mask = recall_delta == 0
+    worse_mask = recall_delta < 0
+    improved = int(np.sum(improved_mask))
+    unchanged = int(np.sum(unchanged_mask))
+    worse = int(np.sum(worse_mask))
+    assert improved + unchanged + worse == N_SEEDS, "recall-outcome buckets must partition all seeds"
+
+    worse_damage = -recall_delta[worse_mask]  # positive numbers = how much recall was lost
+    worse_case_stats = {
+        "count": worse,
+        "mean_recall_lost": round(float(worse_damage.mean()), 4) if worse else 0.0,
+        "worst_case_recall_lost": round(float(worse_damage.max()), 4) if worse else 0.0,
+    }
 
     report = {
         "n_seeds": N_SEEDS,
@@ -123,7 +143,27 @@ def main() -> None:
         "mean_precision_tuned_threshold": round(float(precision_tuned.mean()), 4),
         "seeds_where_tuning_improved_recall": improved,
         "seeds_where_tuning_left_recall_unchanged": unchanged,
-        "seeds_where_tuning_did_not_help_recall_and_cost_precision": worse_or_same_recall_lower_precision,
+        "seeds_where_tuning_made_recall_worse": worse_case_stats,
+        "note": (
+            "The three seeds_where_tuning_* fields above partition all "
+            "n_seeds seeds exactly once each (improved + unchanged + worse "
+            "== n_seeds) by comparing recall_tuned to recall_default per "
+            "seed. seeds_where_tuning_made_recall_worse additionally reports "
+            "the mean and worst-case size of the damage in that bucket, "
+            "since 'tuning hurt recall in N seeds' without a magnitude "
+            "understates how bad the worst cases are."
+        ),
+        "caveat": (
+            "This spread is a LOWER BOUND on true instability, not the full "
+            "picture: the feature set and model hyperparameters are held "
+            "fixed at whatever the single seed-42 run of feature_analysis.py "
+            "and train.py happened to choose. Re-running feature selection "
+            "and hyperparameter search per seed (which would capture that "
+            "additional source of variance) was judged too expensive for a "
+            "364-row training set to run 200 times, but that means the real, "
+            "end-to-end instability of this pipeline is at least this large, "
+            "possibly larger."
+        ),
         "recommendation": None,
     }
 
@@ -159,10 +199,14 @@ def main() -> None:
     logger.info("Mean test recall/precision -- default: %.4f/%.4f, tuned: %.4f/%.4f",
                 report["mean_recall_default_threshold"], report["mean_precision_default_threshold"],
                 report["mean_recall_tuned_threshold"], report["mean_precision_tuned_threshold"])
-    logger.info("Tuning improved recall in %d/%d seeds, unchanged in %d/%d, "
-                "no-recall-benefit-but-lower-precision in %d/%d",
-                improved, N_SEEDS, unchanged, N_SEEDS,
-                worse_or_same_recall_lower_precision, N_SEEDS)
+    logger.info(
+        "Tuning improved recall in %d/%d seeds, unchanged in %d/%d, made "
+        "recall WORSE in %d/%d (mean loss %.1f%%, worst case %.1f%%) -- "
+        "these three counts sum to %d/%d.",
+        improved, N_SEEDS, unchanged, N_SEEDS, worse, N_SEEDS,
+        worse_case_stats["mean_recall_lost"] * 100, worse_case_stats["worst_case_recall_lost"] * 100,
+        improved + unchanged + worse, N_SEEDS,
+    )
     logger.info("RECOMMENDATION: %s", report["recommendation"])
 
     with open(config.MODELS_DIR / "threshold_stability_report.json", "w") as f:

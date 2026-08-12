@@ -17,6 +17,12 @@
   "mean_precision_tuned_threshold": 0.9217,
   "seeds_where_tuning_improved_recall": 47,
   "seeds_where_tuning_left_recall_unchanged": 80,
-  "seeds_where_tuning_did_not_help_recall_and_cost_precision": 36,
+  "seeds_where_tuning_made_recall_worse": {
+    "count": 73,
+    "mean_recall_lost": 0.0525,
+    "worst_case_recall_lost": 0.1667
+  },
+  "note": "The three seeds_where_tuning_* fields above partition all n_seeds seeds exactly once each (improved + unchanged + worse == n_seeds) by comparing recall_tuned to recall_default per seed. seeds_where_tuning_made_recall_worse additionally reports the mean and worst-case size of the damage in that bucket, since 'tuning hurt recall in N seeds' without a magnitude understates how bad the worst cases are.",
+  "caveat": "This spread is a LOWER BOUND on true instability, not the full picture: the feature set and model hyperparameters are held fixed at whatever the single seed-42 run of feature_analysis.py and train.py happened to choose. Re-running feature selection and hyperparameter search per seed (which would capture that additional source of variance) was judged too expensive for a 364-row training set to run 200 times, but that means the real, end-to-end instability of this pipeline is at least this large, possibly larger.",
   "recommendation": "Use the DEFAULT threshold (0.5) for deployment. Across 200 seeds, threshold tuning made recall WORSE on average (-0.9% average recall change) while costing 2.6% average precision, and the threshold itself ranges from 0.0005 to 0.9827 depending on the validation draw -- not stable enough to trust as a fixed operating point."
 }

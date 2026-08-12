@@ -123,6 +123,9 @@
     }
   },
   "delta_average_precision": -0.0031,
+  "nadeau_bengio_t": -0.9957,
+  "nadeau_bengio_p": 0.3363,
+  "cost_statistically_significant": false,
   "final_decision": "reduced",
   "final_features": [
     "mean radius",
@@ -141,5 +144,6 @@
     "worst smoothness",
     "worst concavity",
     "worst symmetry"
-  ]
+  ],
+  "caveat": "This decision is made BEFORE hyperparameter tuning, using an untuned baseline model and average-precision as the CV metric (unavoidable circularity: tuning requires a feature set to already be chosen). It does not by itself establish that the final tuned model is unaffected on other metrics (recall, precision, ROC-AUC) -- see models/feature_tradeoff_report.json (produced by src/feature_tradeoff_analysis.py, run after train.py) for a post-hoc measurement against the real, shipped model, including the explanation-stability benefit this comparison cannot see."
 }
