@@ -1,0 +1,22 @@
+{
+  "n_seeds": 200,
+  "target_recall": 0.95,
+  "threshold_percentiles": {
+    "p05": 0.0157,
+    "p25": 0.1698,
+    "median": 0.5675,
+    "p75": 0.8044,
+    "p95": 0.935,
+    "min": 0.0005,
+    "max": 0.9827
+  },
+  "seed_42_threshold": 0.9553,
+  "mean_recall_default_threshold": 0.952,
+  "mean_precision_default_threshold": 0.9479,
+  "mean_recall_tuned_threshold": 0.9426,
+  "mean_precision_tuned_threshold": 0.9217,
+  "seeds_where_tuning_improved_recall": 47,
+  "seeds_where_tuning_left_recall_unchanged": 80,
+  "seeds_where_tuning_did_not_help_recall_and_cost_precision": 36,
+  "recommendation": "Use the DEFAULT threshold (0.5) for deployment. Across 200 seeds, threshold tuning made recall WORSE on average (-0.9% average recall change) while costing 2.6% average precision, and the threshold itself ranges from 0.0005 to 0.9827 depending on the validation draw -- not stable enough to trust as a fixed operating point."
+}

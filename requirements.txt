@@ -8,3 +8,4 @@ seaborn>=0.13
 streamlit>=1.61
 joblib>=1.5
 statsmodels>=0.14
+scipy>=1.17

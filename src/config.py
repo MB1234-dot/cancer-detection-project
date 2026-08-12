@@ -52,8 +52,18 @@ N_ITER_SEARCH = 25       # RandomizedSearchCV iterations per model family
 CV_SCORING = "average_precision"  # NOT raw recall -- see train.py docstring
 
 # --- threshold tuning --------------------------------------------------
-TARGET_RECALL = 0.98    # minimum recall on malignant class we aim for when
-                         # choosing the high-recall operating threshold
+# CORRECTNESS NOTE (found by external adversarial review, confirmed by
+# reproduction): with ~34 malignant cases in a single validation draw,
+# achievable recall values are multiples of 1/34 ~= 0.0294. The previous
+# value here (0.98) was NOT achievable at anything other than exactly 100%
+# recall (33/34 = 0.9706 < 0.98 < 1.0 = 34/34), which silently collapsed
+# threshold selection to "the predicted probability of the single hardest
+# validation case" -- a min-statistic over 34 points, about the highest-
+# variance estimator available. 0.95 is achievable at 33/34 as well as
+# 34/34, which is less degenerate but still fragile; see
+# src/stability_analysis.py, which is the actual answer to "how much should
+# this be trusted" -- not this constant alone.
+TARGET_RECALL = 0.95
 
 # --- uncertainty ---------------------------------------------------------
 N_BOOTSTRAP = 2000       # resamples for bootstrap confidence intervals on

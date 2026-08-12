@@ -33,11 +33,13 @@ def load_artifacts():
     features = load_selected_features()
     with open(config.EVAL_SUMMARY_PATH) as f:
         eval_summary = json.load(f)
+    stability_path = config.MODELS_DIR / "threshold_stability_report.json"
+    stability = json.load(open(stability_path)) if stability_path.exists() else None
     train_df, _, test_df = load_splits()
-    return model, features, eval_summary, train_df, test_df
+    return model, features, eval_summary, stability, train_df, test_df
 
 
-model, feature_names, eval_summary, train_df, test_df = load_artifacts()
+model, feature_names, eval_summary, stability, train_df, test_df = load_artifacts()
 scaler = model.named_steps["scaler"]
 clf = model.named_steps["clf"]
 
@@ -65,19 +67,26 @@ with st.sidebar:
     st.header("Model performance (held-out test set, n=%d)" % eval_summary["n_test"])
     st.metric("ROC-AUC", default_metrics["roc_auc"])
     c1, c2 = st.columns(2)
-    c1.metric("Recall @ tuned", tuned_metrics["recall"],
-               help="95% CI: [%.3f, %.3f]" % (tuned_metrics["bootstrap_95ci"]["recall"]["ci_lower_2.5%"],
-                                                tuned_metrics["bootstrap_95ci"]["recall"]["ci_upper_97.5%"]))
-    c2.metric("Precision @ tuned", tuned_metrics["precision"],
-               help="95% CI: [%.3f, %.3f]" % (tuned_metrics["bootstrap_95ci"]["precision"]["ci_lower_2.5%"],
-                                                tuned_metrics["bootstrap_95ci"]["precision"]["ci_upper_97.5%"]))
-    st.caption(
-        f"Default decision threshold: {default_threshold} (chosen arbitrarily) | "
-        f"Tuned high-recall threshold: {tuned_threshold:.3f} "
-        f"(chosen on a held-out **validation** set, evaluated once on test)"
-    )
+    c1.metric("Recall @ default (0.5)", default_metrics["recall"],
+               help="95% CI: [%.3f, %.3f]" % (default_metrics["bootstrap_95ci"]["recall"]["ci_lower_2.5%"],
+                                                default_metrics["bootstrap_95ci"]["recall"]["ci_upper_97.5%"]))
+    c2.metric("Precision @ default (0.5)", default_metrics["precision"],
+               help="95% CI: [%.3f, %.3f]" % (default_metrics["bootstrap_95ci"]["precision"]["ci_lower_2.5%"],
+                                                default_metrics["bootstrap_95ci"]["precision"]["ci_upper_97.5%"]))
     st.caption("95% CIs are bootstrap resamples of the 114-patient test set -- "
                "with only %d malignant test cases, point estimates alone would overstate precision." % eval_summary["n_malignant_test"])
+
+    if stability is not None:
+        with st.expander("About the 'tuned' threshold (recommended: don't use it)"):
+            st.markdown(
+                f"A validation-tuned threshold was computed ({tuned_threshold:.3f}) "
+                f"targeting recall >= {stability['target_recall']}. A multi-seed "
+                f"stability analysis (`src/stability_analysis.py`, {stability['n_seeds']} "
+                f"seeds) found this threshold ranges from "
+                f"**{stability['threshold_percentiles']['min']} to "
+                f"{stability['threshold_percentiles']['max']}** depending on the "
+                f"validation draw, and on average **{stability['recommendation']}**"
+            )
     st.divider()
     st.header("Load an example patient")
     example_choice = st.selectbox(
@@ -125,16 +134,20 @@ if st.button("Predict", type="primary"):
     default_pred = "malignant" if proba_malignant >= default_threshold else "benign"
     tuned_pred = "malignant" if proba_malignant >= tuned_threshold else "benign"
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.metric("Predicted probability (malignant)", f"{proba_malignant:.1%}")
-    c2.metric(f"Call @ default threshold ({default_threshold})", default_pred)
-    c3.metric(f"Call @ high-recall threshold ({tuned_threshold:.3f})", tuned_pred)
+    c2.metric(f"Call @ default threshold ({default_threshold}) -- recommended", default_pred)
+    st.caption(
+        f"For reference only, NOT recommended (see sidebar): call at the "
+        f"validation-tuned threshold ({tuned_threshold:.3f}) would be **{tuned_pred}**."
+    )
 
     if default_pred != tuned_pred:
         st.info(
-            "The two thresholds disagree on this case -- it sits in the zone where "
-            "the high-recall threshold (chosen on validation data to minimize missed "
-            "cancers) flags it, but the balanced default threshold would not."
+            "The two thresholds disagree on this case. A multi-seed stability "
+            "analysis found the tuned threshold is not reliably better than the "
+            "default and is highly sensitive to which patients ended up in the "
+            "validation set -- treat the default-threshold call as primary."
         )
 
     st.subheader("Why the model said this")

@@ -36,6 +36,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.tools.tools import add_constant
 
 from src import config
 from src.data import load_splits, TARGET_COL
@@ -44,11 +45,28 @@ logger = config.get_logger(__name__)
 
 
 def compute_vif(X: pd.DataFrame) -> pd.Series:
-    """VIF per column. X must already be numeric with no target column."""
+    """VIF per column. X must already be numeric with no target column.
+
+    CORRECTNESS NOTE (found by external adversarial review, confirmed by
+    reproduction): `variance_inflation_factor` regresses each column on the
+    others to get R^2. Without an intercept in that regression, it's forced
+    through the origin, which conflates each feature's mean level with its
+    collinearity -- and every WDBC feature is strictly positive, so this
+    inflates VIFs by 1-2 orders of magnitude. An earlier version of this
+    function omitted `add_constant`, which reproduced the exact (wrong)
+    values `mean radius`=63499, `worst radius`=8872 previously reported here,
+    and caused the iterative selection below to strip the entire "mean"/
+    "worst" feature block (where WDBC's actual discriminative signal lives)
+    before touching the weakly-correlated "error" block. Correcting this
+    changes the result materially: 14 features dropped instead of 23, 16
+    retained instead of 7, and `mean radius` -- the feature the buggy version
+    called the single worst offender -- survives.
+    """
+    X_const = add_constant(X)
     vif = pd.Series(
-        [variance_inflation_factor(X.values, i) for i in range(X.shape[1])],
-        index=X.columns,
-    )
+        [variance_inflation_factor(X_const.values, i) for i in range(X_const.shape[1])],
+        index=X_const.columns,
+    ).drop("const")
     return vif.sort_values(ascending=False)
 
 
@@ -71,13 +89,30 @@ def iterative_vif_selection(X: pd.DataFrame, threshold: float):
 
 
 def compare_full_vs_reduced(train_df: pd.DataFrame, all_features, selected_features) -> dict:
-    """Quick CV comparison: does dropping redundant features cost us accuracy?"""
+    """Quick CV comparison: does dropping redundant features cost us accuracy?
+
+    IMPORTANT CAVEAT (flagged by external review): this uses a fixed,
+    UNTUNED logistic regression (C=1.0, the sklearn default, class_weight=
+    "balanced") for both feature sets, NOT the hyperparameter-tuned model
+    that train.py eventually ships. That's a real limitation, not a
+    reporting choice made after the fact: feature selection has to happen
+    before hyperparameter tuning in a leakage-safe pipeline (train.py reads
+    the feature list this script writes), so at this point in the pipeline
+    there is no "tuned C" yet to use -- tuning it here would mean tuning
+    hyperparameters for a feature set that hasn't been chosen, which is
+    circular. The result is a fair full-vs-reduced comparison for a generic,
+    reasonably-regularized linear model, but it is NOT a guarantee that the
+    specific deployed model (train.py's tuned C) responds to the reduced
+    feature set the same way. Result keys are named `baseline_*` throughout
+    to make that distinction visible instead of implying these numbers are
+    the shipped model's numbers.
+    """
     y = train_df[TARGET_COL]
     cv = RepeatedStratifiedKFold(
         n_splits=config.CV_SPLITS, n_repeats=config.CV_REPEATS, random_state=config.RANDOM_STATE
     )
     results = {}
-    for label, feats in [("full_30_features", all_features), ("vif_selected_features", selected_features)]:
+    for label, feats in [("baseline_full_30_features", all_features), ("baseline_vif_selected_features", selected_features)]:
         pipe = Pipeline([
             ("scaler", StandardScaler()),
             ("clf", LogisticRegression(max_iter=5000, random_state=config.RANDOM_STATE, class_weight="balanced")),
@@ -87,6 +122,7 @@ def compare_full_vs_reduced(train_df: pd.DataFrame, all_features, selected_featu
             "n_features": len(feats),
             "mean_average_precision": round(float(np.mean(scores)), 4),
             "std_average_precision": round(float(np.std(scores)), 4),
+            "note": "untuned baseline (C=1.0), not the tuned deployed model",
         }
     return results
 
@@ -116,8 +152,8 @@ def main() -> None:
             label, res["n_features"], res["mean_average_precision"], res["std_average_precision"],
         )
 
-    delta = (comparison["vif_selected_features"]["mean_average_precision"]
-             - comparison["full_30_features"]["mean_average_precision"])
+    delta = (comparison["baseline_vif_selected_features"]["mean_average_precision"]
+             - comparison["baseline_full_30_features"]["mean_average_precision"])
     logger.info(
         "Delta from dropping collinear features: %+.4f average precision. "
         "%s",

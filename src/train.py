@@ -46,6 +46,7 @@ from xgboost import XGBClassifier
 
 from src import config
 from src.data import load_splits, load_selected_features, TARGET_COL
+from src.stats_utils import nadeau_bengio_test
 
 logger = config.get_logger(__name__)
 
@@ -101,6 +102,11 @@ def main() -> None:
 
     results = {}
     fitted_models = {}
+    per_fold_scores = {}  # for significance testing between model families
+
+    n_splits_total = config.CV_SPLITS * config.CV_REPEATS
+    n_test_per_fold = len(X_train) // config.CV_SPLITS
+    n_train_per_fold = len(X_train) - n_test_per_fold
 
     for name, (pipe, param_dist) in searches.items():
         logger.info("Tuning %s (%d CV folds x %d repeats, scoring=%s)...",
@@ -111,6 +117,14 @@ def main() -> None:
         )
         search.fit(X_train, y_train)
         fitted_models[name] = search.best_estimator_
+
+        # per-fold scores for the WINNING hyperparameter config of this model
+        # family -- same `cv` object (same folds, same order) was used for all
+        # three searches, so these are properly paired across model families.
+        per_fold_scores[name] = np.array([
+            search.cv_results_[f"split{i}_test_score"][search.best_index_]
+            for i in range(n_splits_total)
+        ])
 
         # in-sample (training-set) sanity numbers only -- NOT a generalization
         # estimate. The real estimate is search.best_score_ (cross-validated).
@@ -134,8 +148,42 @@ def main() -> None:
             name, results[name]["cv_mean_average_precision"], results[name]["cv_std_average_precision"],
         )
 
+    # Each cv_mean above is the MAX over N_ITER_SEARCH randomly sampled
+    # configs -- a "winner's curse" upward bias that differs across model
+    # families since their search spaces differ. Picking by raw mean is a
+    # reasonable starting point but not a statistically justified one; test it.
     best_name = max(results, key=lambda n: results[n]["cv_mean_average_precision"])
-    logger.info("Selected model: %s (highest cross-validated average precision)", best_name)
+    significance = {}
+    for name in results:
+        if name == best_name:
+            continue
+        t_stat, p_value = nadeau_bengio_test(
+            per_fold_scores[best_name], per_fold_scores[name],
+            n_train=n_train_per_fold, n_test=n_test_per_fold,
+        )
+        significance[f"{best_name}_vs_{name}"] = {
+            "mean_diff": round(float(results[best_name]["cv_mean_average_precision"]
+                                      - results[name]["cv_mean_average_precision"]), 4),
+            "nadeau_bengio_t": round(t_stat, 4),
+            "nadeau_bengio_p": round(p_value, 4),
+            "significant_at_0.05": bool(p_value < 0.05),
+        }
+        logger.info(
+            "  %s vs %s: mean diff=%+.4f, Nadeau-Bengio corrected p=%.4f (%s)",
+            best_name, name, significance[f"{best_name}_vs_{name}"]["mean_diff"], p_value,
+            "significant" if p_value < 0.05 else "NOT significant -- statistically indistinguishable",
+        )
+
+    any_significant = any(v["significant_at_0.05"] for v in significance.values())
+    if any_significant:
+        logger.info("Selected model: %s (significantly better on corrected test)", best_name)
+    else:
+        logger.info(
+            "Selected model: %s -- NOTE: not significantly better than the alternatives "
+            "(Nadeau-Bengio corrected p > 0.05 in all pairwise comparisons). Chosen for "
+            "simplicity, calibrated probabilities, and interpretability, not for a proven "
+            "performance edge.", best_name,
+        )
     logger.info(json.dumps(results[best_name], indent=2))
 
     best_model = fitted_models[best_name]
@@ -143,7 +191,13 @@ def main() -> None:
     joblib.dump(features, config.MODELS_DIR / "feature_names.joblib")
 
     with open(config.RESULTS_SUMMARY_PATH, "w") as f:
-        json.dump({"results": results, "selected_model": best_name, "features_used": features}, f, indent=2)
+        json.dump({
+            "results": results,
+            "selected_model": best_name,
+            "selection_significance": significance,
+            "selection_statistically_justified": any_significant,
+            "features_used": features,
+        }, f, indent=2)
 
     logger.info("Saved %s, feature_names.joblib, %s", config.MODEL_PATH, config.RESULTS_SUMMARY_PATH)
 
