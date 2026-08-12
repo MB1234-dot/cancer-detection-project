@@ -67,14 +67,21 @@ with st.sidebar:
     st.header("Model performance (held-out test set, n=%d)" % eval_summary["n_test"])
     st.metric("ROC-AUC", default_metrics["roc_auc"])
     c1, c2 = st.columns(2)
-    c1.metric("Recall @ default (0.5)", default_metrics["recall"],
-               help="95% CI: [%.3f, %.3f]" % (default_metrics["bootstrap_95ci"]["recall"]["ci_lower_2.5%"],
-                                                default_metrics["bootstrap_95ci"]["recall"]["ci_upper_97.5%"]))
-    c2.metric("Precision @ default (0.5)", default_metrics["precision"],
-               help="95% CI: [%.3f, %.3f]" % (default_metrics["bootstrap_95ci"]["precision"]["ci_lower_2.5%"],
-                                                default_metrics["bootstrap_95ci"]["precision"]["ci_upper_97.5%"]))
-    st.caption("95% CIs are bootstrap resamples of the 114-patient test set -- "
-               "with only %d malignant test cases, point estimates alone would overstate precision." % eval_summary["n_malignant_test"])
+    recall_ci = default_metrics["bootstrap_95ci"]["recall"]
+    precision_ci = default_metrics["bootstrap_95ci"]["precision"]
+    c1.metric(
+        "Recall @ default (0.5)", default_metrics["recall"],
+        help=f"95% CI: [{recall_ci['ci_lower_2.5%']:.3f}, {recall_ci['ci_upper_97.5%']:.3f}]",
+    )
+    c2.metric(
+        "Precision @ default (0.5)", default_metrics["precision"],
+        help=f"95% CI: [{precision_ci['ci_lower_2.5%']:.3f}, {precision_ci['ci_upper_97.5%']:.3f}]",
+    )
+    st.caption(
+        f"95% CIs are bootstrap resamples of the {eval_summary['n_test']}-patient test set -- "
+        f"with only {eval_summary['n_malignant_test']} malignant test cases, point estimates "
+        f"alone would overstate precision."
+    )
 
     if stability is not None:
         with st.expander("About the 'tuned' threshold (recommended: don't use it)"):

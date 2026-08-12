@@ -73,19 +73,34 @@ edited out, because the second one is more informative than the first.
    one's fix is measurably worse than the 30-feature model on recall,
    precision, and ROC-AUC** — a real cost that the untuned pre-tuning
    comparison in `feature_analysis.py` doesn't measure and can't see.
-7. **Round-two fixes (this version):** a VIF mutation-tested regression
-   test, corrected stability-report accounting, a proper significance test
-   replacing the old bare `delta > -0.01` rule, and a new post-hoc script
-   that measures — on the actual shipped model — both the real performance
-   cost and a real, previously-unmeasured explanation-stability benefit of
-   the reduced feature set. See below.
+7. **Round-two fixes:** a VIF mutation-tested regression test, corrected
+   stability-report accounting, a proper significance test replacing the
+   old bare `delta > -0.01` rule, and a new post-hoc script that measures —
+   on the actual shipped model — both the real performance cost and a
+   real, previously-unmeasured explanation-stability benefit of the
+   reduced feature set. See below.
+8. **Deployment found a fourth bug the pipeline never could.** Minutes
+   after first deploying to Streamlit Community Cloud, the live app
+   crashed on load: `ValueError` from `"95% CI: [%.3f, %.3f]" % (...)` —
+   an unescaped literal `%` in a Python `%`-format string, which the `%`
+   operator tried to parse as a format directive. All 18 tests at that
+   point were pipeline/model tests; none of them ever executed `app.py`,
+   so this shipped straight through review, mutation testing, and CI
+   without anyone (or anything) running the one file that's actually the
+   product. Fixed by switching those lines to f-strings and adding
+   `tests/test_app.py`, which uses Streamlit's `AppTest` framework to
+   actually execute the app and every button/dropdown interaction — the
+   kind of test that would have caught this before it ever reached a
+   user. 21 tests total now.
 
 If you're evaluating this repo, the honest thing to say about it is not
-"rigorous ML pipeline." It's "a pipeline that made real mistakes, had them
-caught by adversarial review rather than self-review twice in a row, and was
-fixed with the fixes checked back in and mutation-tested." That's a
-different, more defensible claim, and it's the one this README is trying to
-actually support rather than assert.
+"rigorous ML pipeline." It's "a pipeline that made real mistakes, had some
+caught by adversarial review, one caught by mutation testing, and one that
+got all the way to a live crash before anyone noticed the app itself had
+zero test coverage — and each time, the response was a real fix plus a
+test that would catch it next time, not just a patch." That's a different,
+more defensible claim, and it's the one this README is trying to actually
+support rather than assert.
 
 ## What changed after external review
 
@@ -329,15 +344,19 @@ mattered," not as precise credit to one specific feature. See
 
 ## Engineering practices
 
-- **Tests** (`tests/`, 18 passing): data integrity, split non-overlap and
+- **Tests** (`tests/`, 21 passing): data integrity, split non-overlap and
   stratification, split reproducibility, model output shape/range,
   determinism, threshold-selection edge cases (including the corrected
   min-statistic documentation test), a direct regression test against the
-  original leakage bug that exercises the real entry point, and a
+  original leakage bug that exercises the real entry point, a
   mutation-tested regression test for the VIF intercept fix (added after
   round-two review found this was the one bug with zero test coverage;
   verified the same way round two verified it — reintroducing the bug
-  makes the new test fail with the exact known buggy value).
+  makes the new test fail with the exact known buggy value), and
+  (`test_app.py`) three Streamlit `AppTest` smoke tests that actually
+  execute `app.py` and simulate button/dropdown interactions — added after
+  a real `%`-format bug crashed the live deployed app despite every other
+  test passing, because none of them ran the app itself.
 - **CI** (`.github/workflows/ci.yml`): runs the full pipeline (through
   `stability_analysis.py`, `feature_tradeoff_analysis.py`, and
   `shap_explain.py`) and test suite on every push, then builds the Docker
@@ -384,7 +403,8 @@ mattered," not as precise credit to one specific feature. See
 │   └── shap_explain.py                 # global + per-patient SHAP explanations
 ├── tests/
 │   ├── test_data.py             # split correctness, stratification, reproducibility
-│   └── test_pipeline.py          # model contracts, threshold edge cases, VIF + leakage regression tests
+│   ├── test_pipeline.py          # model contracts, threshold edge cases, VIF + leakage regression tests
+│   └── test_app.py                # AppTest smoke tests -- actually runs app.py, not just src/
 ├── app/app.py                    # Streamlit demo (defaults to the recommended threshold)
 ├── .github/workflows/ci.yml
 ├── Dockerfile
@@ -407,7 +427,7 @@ python3 -m src.stability_analysis
 python3 -m src.feature_tradeoff_analysis
 python3 -m src.shap_explain
 
-pytest tests/ -v                  # 18 tests
+pytest tests/ -v                  # 21 tests
 
 streamlit run app/app.py          # run from project root
 ```
