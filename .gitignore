@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Note: data/*.csv, models/*, and figures/*.png are intentionally NOT
+# ignored -- they're small (a few hundred KB total), and committing them
+# means Streamlit Community Cloud can serve the app immediately without a
+# training step, and the README's embedded figures render on GitHub.

@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pipeline (regenerate data + model artifacts)
+        run: |
+          python3 -m src.eda
+          python3 -m src.split_data
+          python3 -m src.feature_analysis
+          python3 -m src.train
+          python3 -m src.evaluate
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t cancer-detection-app:ci .
+
+      - name: Smoke-test the container
+        run: |
+          docker run -d --name app-smoke-test -p 8501:8501 cancer-detection-app:ci
+          for i in $(seq 1 15); do
+            if curl -fsS http://localhost:8501/_stcore/health; then
+              echo "App is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "App failed to become healthy in time"
+          docker logs app-smoke-test
+          exit 1

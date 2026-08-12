@@ -1,0 +1,51 @@
+{
+  "n_validation": 91,
+  "n_test": 114,
+  "n_malignant_test": 42,
+  "default_threshold": 0.5,
+  "tuned_threshold": 0.1741,
+  "test_metrics_default_threshold": {
+    "recall": 0.9762,
+    "precision": 0.9762,
+    "roc_auc": 0.997,
+    "bootstrap_95ci": {
+      "recall": {
+        "point_estimate_mean_of_resamples": 0.9769,
+        "ci_lower_2.5%": 0.921,
+        "ci_upper_97.5%": 1.0
+      },
+      "precision": {
+        "point_estimate_mean_of_resamples": 0.9761,
+        "ci_lower_2.5%": 0.9167,
+        "ci_upper_97.5%": 1.0
+      },
+      "roc_auc": {
+        "point_estimate_mean_of_resamples": 0.9971,
+        "ci_lower_2.5%": 0.9893,
+        "ci_upper_97.5%": 1.0
+      }
+    }
+  },
+  "test_metrics_tuned_threshold": {
+    "recall": 0.9762,
+    "precision": 0.8723,
+    "roc_auc": 0.997,
+    "bootstrap_95ci": {
+      "recall": {
+        "point_estimate_mean_of_resamples": 0.9769,
+        "ci_lower_2.5%": 0.921,
+        "ci_upper_97.5%": 1.0
+      },
+      "precision": {
+        "point_estimate_mean_of_resamples": 0.8732,
+        "ci_lower_2.5%": 0.7692,
+        "ci_upper_97.5%": 0.9608
+      },
+      "roc_auc": {
+        "point_estimate_mean_of_resamples": 0.9971,
+        "ci_lower_2.5%": 0.9893,
+        "ci_upper_97.5%": 1.0
+      }
+    }
+  }
+}

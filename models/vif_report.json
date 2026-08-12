@@ -1,0 +1,184 @@
+{
+  "vif_threshold": 10.0,
+  "all_features": [
+    "mean radius",
+    "mean texture",
+    "mean perimeter",
+    "mean area",
+    "mean smoothness",
+    "mean compactness",
+    "mean concavity",
+    "mean concave points",
+    "mean symmetry",
+    "mean fractal dimension",
+    "radius error",
+    "texture error",
+    "perimeter error",
+    "area error",
+    "smoothness error",
+    "compactness error",
+    "concavity error",
+    "concave points error",
+    "symmetry error",
+    "fractal dimension error",
+    "worst radius",
+    "worst texture",
+    "worst perimeter",
+    "worst area",
+    "worst smoothness",
+    "worst compactness",
+    "worst concavity",
+    "worst concave points",
+    "worst symmetry",
+    "worst fractal dimension"
+  ],
+  "dropped_features": [
+    {
+      "feature": "mean radius",
+      "vif_at_removal": 63499.29
+    },
+    {
+      "feature": "worst radius",
+      "vif_at_removal": 8872.17
+    },
+    {
+      "feature": "mean perimeter",
+      "vif_at_removal": 4350.15
+    },
+    {
+      "feature": "worst perimeter",
+      "vif_at_removal": 610.52
+    },
+    {
+      "feature": "mean fractal dimension",
+      "vif_at_removal": 555.91
+    },
+    {
+      "feature": "worst smoothness",
+      "vif_at_removal": 371.77
+    },
+    {
+      "feature": "worst texture",
+      "vif_at_removal": 302.33
+    },
+    {
+      "feature": "worst fractal dimension",
+      "vif_at_removal": 201.94
+    },
+    {
+      "feature": "worst symmetry",
+      "vif_at_removal": 174.64
+    },
+    {
+      "feature": "mean concave points",
+      "vif_at_removal": 158.42
+    },
+    {
+      "feature": "worst area",
+      "vif_at_removal": 133.37
+    },
+    {
+      "feature": "mean compactness",
+      "vif_at_removal": 102.39
+    },
+    {
+      "feature": "radius error",
+      "vif_at_removal": 91.89
+    },
+    {
+      "feature": "mean symmetry",
+      "vif_at_removal": 78.76
+    },
+    {
+      "feature": "worst concave points",
+      "vif_at_removal": 75.68
+    },
+    {
+      "feature": "worst compactness",
+      "vif_at_removal": 52.41
+    },
+    {
+      "feature": "perimeter error",
+      "vif_at_removal": 44.55
+    },
+    {
+      "feature": "mean smoothness",
+      "vif_at_removal": 34.77
+    },
+    {
+      "feature": "mean texture",
+      "vif_at_removal": 25.7
+    },
+    {
+      "feature": "mean concavity",
+      "vif_at_removal": 18.01
+    },
+    {
+      "feature": "compactness error",
+      "vif_at_removal": 16.53
+    },
+    {
+      "feature": "concave points error",
+      "vif_at_removal": 15.77
+    },
+    {
+      "feature": "mean area",
+      "vif_at_removal": 11.55
+    }
+  ],
+  "selected_features_by_vif": [
+    "texture error",
+    "area error",
+    "smoothness error",
+    "concavity error",
+    "symmetry error",
+    "fractal dimension error",
+    "worst concavity"
+  ],
+  "cv_comparison": {
+    "full_30_features": {
+      "n_features": 30,
+      "mean_average_precision": 0.9934,
+      "std_average_precision": 0.0072
+    },
+    "vif_selected_features": {
+      "n_features": 7,
+      "mean_average_precision": 0.9775,
+      "std_average_precision": 0.0138
+    }
+  },
+  "delta_average_precision": -0.0159,
+  "final_decision": "full",
+  "final_features": [
+    "mean radius",
+    "mean texture",
+    "mean perimeter",
+    "mean area",
+    "mean smoothness",
+    "mean compactness",
+    "mean concavity",
+    "mean concave points",
+    "mean symmetry",
+    "mean fractal dimension",
+    "radius error",
+    "texture error",
+    "perimeter error",
+    "area error",
+    "smoothness error",
+    "compactness error",
+    "concavity error",
+    "concave points error",
+    "symmetry error",
+    "fractal dimension error",
+    "worst radius",
+    "worst texture",
+    "worst perimeter",
+    "worst area",
+    "worst smoothness",
+    "worst compactness",
+    "worst concavity",
+    "worst concave points",
+    "worst symmetry",
+    "worst fractal dimension"
+  ]
+}
