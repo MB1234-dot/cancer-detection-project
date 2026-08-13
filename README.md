@@ -1,5 +1,7 @@
 # Breast Mass Malignancy Risk Estimator
 
+**Live demo:** https://cancer-detection-project.streamlit.app/
+
 A machine learning project built around the questions that actually matter in
 a screening context — which errors are worse, how confident is the model,
 whether the "held-out" test set was actually held out, whether a "fix"
@@ -255,6 +257,55 @@ selection (`nadeau_bengio_p=0.336`, not significant, see above), with an
 explicit code comment and log line pointing at
 `feature_tradeoff_analysis.py` so nobody mistakes that untuned check for a
 guarantee about the deployed model.
+
+## Round three: the tests all passed and the live app was down anyway
+
+Every finding above concerns methodology. This one doesn't, and it is
+arguably the most embarrassing of the lot.
+
+`app/app.py` built several strings with `%`-formatting that contained a
+literal percent sign — `"95% CI: [%.3f, %.3f]"`. Python does not read that
+`%` as a percent sign; it reads `% C` as the start of a format spec and
+raises:
+
+```
+ValueError: unsupported format character 'C' (0x43) at index 4
+```
+
+That code runs at module import, so the deployed Streamlit app failed on
+load. Not on a particular input, not intermittently — the demo linked at
+the top of this README was a stack trace for anyone who clicked it.
+
+Why nothing caught it:
+
+- The full test suite passed, because the failing line is module-level
+  Streamlit code, not an importable function. Nothing ever executed it.
+- Local development didn't surface it either, since the workflow was
+  "change code, run tests," not "change code, open the app."
+- The bug string is *displayed correctly* in the source. `"95% CI"` looks
+  right. It only misbehaves at the moment `%` is applied.
+
+The fix converts the affected strings to f-strings, which removes the
+failure mode rather than escaping around it (`%%` would also work, but
+leaves the next person one keystroke from reintroducing it).
+
+`tests/test_app.py` now covers this in two layers: a static AST check that
+fails if `%`-formatting on a string literal reappears in `app.py` (integer
+modulo is correctly not flagged), and `AppTest`-based rendering tests that
+assert on actual content — the disclaimer, the sidebar metrics, the CI
+tooltip text, the inputs, and a `Predict` click yielding a probability in
+range. The earlier version of that file only asserted `not at.exception`,
+which is close to worthless: an app that renders nothing at all passes it.
+
+Both directions were checked. The new tests fail against the pre-fix
+`app.py`, reproducing the exact production `ValueError`, and pass against
+the fix. The deployed app was then confirmed rendering in a browser — not
+inferred from a green test run.
+
+**The transferable lesson:** a passing test suite is evidence about the
+code paths the tests execute, and nothing more. "Tests pass" and "the thing
+works" are different claims, and the gap between them is exactly where
+deployment bugs live. Verify on the real system.
 
 ## Results (post-fix)
 
