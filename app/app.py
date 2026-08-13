@@ -63,18 +63,33 @@ st.markdown(
     "prediction, its confidence, and a feature-level explanation of *why*."
 )
 
+def _ci_help(metric_name):
+    """Format a bootstrap 95% CI as a metric tooltip.
+
+    Note: built with f-strings on purpose. These strings contain a literal '%'
+    (in "95% CI"), and under %-formatting that '%' is parsed as the start of a
+    format spec -- "95% C" raised ValueError and took the deployed app down on
+    load. See tests/test_app.py::test_no_percent_format_strings.
+    """
+    ci = default_metrics["bootstrap_95ci"][metric_name]
+    lower = ci["ci_lower_2.5%"]
+    upper = ci["ci_upper_97.5%"]
+    return f"95% CI: [{lower:.3f}, {upper:.3f}]"
+
+
 with st.sidebar:
-    st.header("Model performance (held-out test set, n=%d)" % eval_summary["n_test"])
+    st.header(f"Model performance (held-out test set, n={eval_summary['n_test']})")
     st.metric("ROC-AUC", default_metrics["roc_auc"])
     c1, c2 = st.columns(2)
     c1.metric("Recall @ default (0.5)", default_metrics["recall"],
-               help="95% CI: [%.3f, %.3f]" % (default_metrics["bootstrap_95ci"]["recall"]["ci_lower_2.5%"],
-                                                default_metrics["bootstrap_95ci"]["recall"]["ci_upper_97.5%"]))
+              help=_ci_help("recall"))
     c2.metric("Precision @ default (0.5)", default_metrics["precision"],
-               help="95% CI: [%.3f, %.3f]" % (default_metrics["bootstrap_95ci"]["precision"]["ci_lower_2.5%"],
-                                                default_metrics["bootstrap_95ci"]["precision"]["ci_upper_97.5%"]))
-    st.caption("95% CIs are bootstrap resamples of the 114-patient test set -- "
-               "with only %d malignant test cases, point estimates alone would overstate precision." % eval_summary["n_malignant_test"])
+              help=_ci_help("precision"))
+    st.caption(
+        "95% CIs are bootstrap resamples of the 114-patient test set -- "
+        f"with only {eval_summary['n_malignant_test']} malignant test cases, "
+        "point estimates alone would overstate precision."
+    )
 
     if stability is not None:
         with st.expander("About the 'tuned' threshold (recommended: don't use it)"):
