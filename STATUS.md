@@ -11,12 +11,12 @@ a new session never has to reconstruct where things stand.
 
 | | |
 |---|---|
-| Local `HEAD` | `7d2057b` (merge) |
-| `origin/main` | `7d2057b` |
+| Local `HEAD` | `fb30e50` |
+| `origin/main` | `fb30e50` |
 | In sync? | Yes — verified by fresh clone, not by push output |
 | Live app | https://cancer-detection-project.streamlit.app/ |
 | Live app verified? | See "Open watch item" below |
-| Test suite | 25 passed |
+| Test suite | 25 passed, verified against a fresh clone of the public repo |
 
 ## What is verified, and how
 
