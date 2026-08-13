@@ -123,9 +123,10 @@
     }
   },
   "delta_average_precision": -0.0031,
-  "nadeau_bengio_t": -0.9957,
-  "nadeau_bengio_p": 0.3363,
-  "cost_statistically_significant": false,
+  "noninferiority_margin": 0.01,
+  "nadeau_bengio_noninferiority_t": 2.1852,
+  "nadeau_bengio_noninferiority_p": 0.0232,
+  "noninferiority_demonstrated": true,
   "final_decision": "reduced",
   "final_features": [
     "mean radius",

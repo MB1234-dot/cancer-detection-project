@@ -19,8 +19,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          # Install from the full pinned lockfile (exact versions of every
+          # transitive dependency) rather than requirements.txt, so CI runs
+          # against the exact environment the model was trained/pickled
+          # under. requirements.txt is kept in sync (see README) because
+          # Streamlit Community Cloud only reads that file.
+          pip install -r requirements.lock
+          pip install pytest==9.1.1
 
       - name: Run pipeline (regenerate data + model artifacts)
         run: |

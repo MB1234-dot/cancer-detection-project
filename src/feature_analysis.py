@@ -41,7 +41,7 @@ from statsmodels.tools.tools import add_constant
 
 from src import config
 from src.data import load_splits, TARGET_COL
-from src.stats_utils import nadeau_bengio_test
+from src.stats_utils import nadeau_bengio_noninferiority_test
 
 logger = config.get_logger(__name__)
 
@@ -166,40 +166,53 @@ def main() -> None:
     delta = (comparison["baseline_vif_selected_features"]["mean_average_precision"]
              - comparison["baseline_full_30_features"]["mean_average_precision"])
 
-    # SIGNIFICANCE, not a bare "-0.01" threshold (flagged by round-two
-    # external review as the most important remaining issue: an arbitrary
-    # inequality with no notion of statistical power, unlike the
-    # Nadeau-Bengio-tested model-family choice in train.py). Same `cv`
-    # object -> same folds -> the two score arrays are properly paired.
+    # NON-INFERIORITY test, not a bare significance test against zero
+    # (flagged by external review: "cost is not significantly different
+    # from zero" was being treated as proof the reduced set is fine, which
+    # is an absence-of-evidence-as-evidence-of-absence error -- worsened by
+    # Nadeau-Bengio's conservative correction making genuine costs *harder*
+    # to detect, i.e. easier to wrongly ship). We instead require positive
+    # evidence that the cost is no worse than a declared tolerance
+    # (VIF_COST_EQUIVALENCE_MARGIN) -- the one-sided form of a TOST
+    # equivalence test, since we only care about the reduced set being
+    # worse, not about it being suspiciously better. Same `cv` object ->
+    # same folds -> the two score arrays are properly paired.
     n_test_per_fold = len(train_df) // config.CV_SPLITS
     n_train_per_fold = len(train_df) - n_test_per_fold
-    t_stat, p_value = nadeau_bengio_test(
+    margin = config.VIF_COST_EQUIVALENCE_MARGIN
+    t_stat, p_value = nadeau_bengio_noninferiority_test(
         raw_scores["baseline_vif_selected_features"], raw_scores["baseline_full_30_features"],
-        n_train=n_train_per_fold, n_test=n_test_per_fold,
+        n_train=n_train_per_fold, n_test=n_test_per_fold, margin=margin,
     )
-    significant_cost = bool(p_value < 0.05 and delta < 0)
+    noninferiority_demonstrated = bool(p_value < 0.05)
     logger.info(
-        "Delta from dropping collinear features: %+.4f average precision "
-        "(Nadeau-Bengio corrected p=%.4f). %s",
-        delta, p_value,
-        "Cost is NOT statistically significant at this (untuned-baseline, "
-        "average-precision) stage -- proceeding with the reduced, more "
-        "interpretable feature set." if not significant_cost else
-        "Statistically significant accuracy cost detected -- keeping the "
-        "full feature set despite the multicollinearity (see README)."
+        "Delta from dropping collinear features: %+.4f average precision. "
+        "Non-inferiority test (is the cost positively demonstrated to be "
+        "within the %.2f-point tolerance?): Nadeau-Bengio corrected "
+        "one-sided p=%.4f. %s",
+        delta, margin, p_value,
+        "Non-inferiority DEMONSTRATED -- proceeding with the reduced, more "
+        "interpretable feature set." if noninferiority_demonstrated else
+        "Non-inferiority NOT demonstrated (this may mean the cost is real, "
+        "or just that this untuned-baseline check is underpowered to tell) "
+        "-- keeping the full feature set as the conservative default."
     )
     logger.info(
-        "IMPORTANT: this significance test covers only the untuned-baseline "
-        "CV comparison used to make this upstream, pre-hyperparameter-tuning "
-        "decision. It is NOT a claim that the final tuned, deployed model is "
-        "unaffected -- run `python3 -m src.feature_tradeoff_analysis` after "
-        "train.py for a post-hoc measurement of what the actual shipped "
-        "model gives up (and gains in explanation stability) by using the "
-        "reduced feature set; that measurement found a real, significant "
-        "cost that this untuned check did not catch. See README."
+        "IMPORTANT: this test covers only the untuned-baseline CV comparison "
+        "used to make this upstream, pre-hyperparameter-tuning decision. It "
+        "is NOT a claim that the final tuned, deployed model is unaffected "
+        "-- run `python3 -m src.feature_tradeoff_analysis` after train.py "
+        "for a post-hoc measurement of what the actual shipped model gives "
+        "up (and gains in explanation stability) by using the reduced "
+        "feature set; that measurement found a real, significant cost on "
+        "recall/precision/ROC-AUC once each feature set is independently "
+        "tuned. The reduced set is still shipped because that measured "
+        "cost is a deliberate trade against a measured explanation-"
+        "stability benefit (see README), not because this upstream check "
+        "cleared it."
     )
 
-    final_features = selected_features if not significant_cost else all_features
+    final_features = selected_features if noninferiority_demonstrated else all_features
 
     report = {
         "vif_threshold": config.VIF_THRESHOLD,
@@ -208,9 +221,10 @@ def main() -> None:
         "selected_features_by_vif": selected_features,
         "cv_comparison": comparison,
         "delta_average_precision": round(float(delta), 4),
-        "nadeau_bengio_t": round(t_stat, 4),
-        "nadeau_bengio_p": round(p_value, 4),
-        "cost_statistically_significant": significant_cost,
+        "noninferiority_margin": margin,
+        "nadeau_bengio_noninferiority_t": round(t_stat, 4),
+        "nadeau_bengio_noninferiority_p": round(p_value, 4),
+        "noninferiority_demonstrated": noninferiority_demonstrated,
         "final_decision": "reduced" if final_features is selected_features else "full",
         "final_features": final_features,
         "caveat": (

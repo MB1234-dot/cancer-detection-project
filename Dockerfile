@@ -8,8 +8,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install from the full pinned lockfile (exact versions of every transitive
+# dependency), not requirements.txt, so the image matches the exact
+# environment the committed model artifacts were trained/pickled under.
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
 
