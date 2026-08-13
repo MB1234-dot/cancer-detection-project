@@ -1,6 +1,6 @@
 """
 Post-hoc, honest measurement of what the 16-vs-30-feature decision actually
-costs and buys, using the REAL shipped model -- not the untuned baseline in
+costs and buys, using REAL tuned models -- not the untuned baseline in
 feature_analysis.py.
 
 Why this script exists: feature_analysis.py has to decide which feature set
@@ -8,35 +8,57 @@ to ship BEFORE hyperparameter tuning happens (train.py reads the feature
 list it writes), so its own comparison necessarily uses an untuned baseline
 logistic regression and average precision as the CV metric. That is a real,
 documented, unavoidable circularity -- not a mistake -- but it means that
-comparison cannot tell you how the ACTUAL tuned model (train.py's chosen C,
-class_weight) behaves on the metrics people actually read off the README
-(recall, precision, ROC-AUC), at the actual deployment threshold (0.5).
+comparison cannot tell you how a properly tuned model behaves on the
+metrics people actually read off the README (recall, precision, ROC-AUC),
+at the actual deployment threshold (0.5).
 
-External adversarial review (round two) measured this directly and found
-that on the real, shipped configuration, the 16-feature (VIF-reduced) model
-is measurably and statistically significantly WORSE than the 30-feature
-model on recall, precision, and ROC-AUC -- reproduced here. That is a real
-cost, and this project should say so plainly instead of leaning on the
-untuned baseline's "no meaningful cost" finding as if it settled the
-question.
+CORRECTNESS NOTE (found by external adversarial review, round three): an
+earlier version of this script applied ONE hyperparameter config -- the C
+tuned by train.py specifically for the 16-feature set -- to BOTH feature
+sets. That's not a neutral comparison: it runs the 30-feature model at ~21x
+weaker regularization than a search would pick for it, which is exactly the
+regime where multicollinearity does the most damage to a linear model. That
+single choice was the entire cause of a previously-reported "no significant
+cost" finding that round-two review's own (correctly, independently-tuned)
+measurement contradicted -- confirmed by round three, which showed the two
+results are bit-identical across sklearn 1.8.0/1.9.0, ruling out an
+environment explanation.
 
-The same review also independently found, though didn't attempt to
-quantify as we do here, that the 16-feature model's SHAP explanations are
-far more stable across resampled data than the 30-feature model's -- because
-severe multicollinearity in the 30-feature set lets a linear model
-arbitrarily redistribute "credit" between near-duplicate features (mean
-radius / mean perimeter / mean area at r=0.99-1.00) without changing a
-single prediction. That instability isn't a hypothetical: below, we resample
-the split 100 times, keep the model family and hyperparameters fixed, and
-check how often the top-3 SHAP features by mean |value| land on the same 3
-features. If they don't, "why did the model flag this patient" has a
-different answer depending on which resample of the training data happened
-to get used -- which is a real cost of the 30-feature model this comparison
-CAN see, and the tuned-recall comparison cannot.
+This version runs BOTH comparisons, because they answer different
+questions, and reports both plainly instead of picking one:
+
+  - "matched regularization": every arm gets the SAME hyperparameters
+    (the ones train.py chose for the deployed 16-feature model). Answers
+    "at these settings, does dropping features cost anything?" -- useful
+    for isolating the effect of the feature set alone, but NOT the
+    question "which model should ship," since nobody would deploy a
+    30-feature model tuned for a 16-feature problem.
+  - "independently tuned": each arm gets its OWN best C, found by a quick
+    per-split CV search. Answers the actual deployment question: "if I
+    tune each candidate properly and pick the best, which wins?"
+
+The same review found, and this script also measures, that the 16-feature
+model's SHAP explanations are far more stable across resampled data than
+the 30-feature model's -- because severe multicollinearity in the
+30-feature set lets a linear model arbitrarily redistribute "credit"
+between near-duplicate features (mean radius / mean perimeter / mean area
+at r=0.99-1.00) without changing a single prediction. Below, we resample
+the split 100 times and check how often the top-3 SHAP features by mean
+|value| land on the same 3 features -- a real cost of the 30-feature model
+that the tuned-recall comparison alone cannot see, in either direction.
+
+STATISTICAL NOTE (round three): all 100 splits resample the SAME 569 rows,
+so the splits are not independent -- adjacent splits share most of their
+data. This makes paired-test p-values here (and in round two's own
+analysis) anti-conservative: real, but overstated in magnitude. Win/loss
+counts (how many of the 100 splits favor each arm) are the more honest
+summary of the same evidence and are reported alongside the p-values for
+that reason -- trust the counts over the exponents.
 
 Net: this is a genuine trade-off, not a free lunch in either direction.
-This script's whole job is to put both sides of it in one place with
-numbers, instead of asserting either "no cost" or "no benefit."
+This script's whole job is to put multiple honest cuts of it in one place
+with numbers, instead of asserting "no cost," "definitely worse," or
+picking whichever comparison tells the more flattering story.
 
 Run: python3 -m src.feature_tradeoff_analysis   (after train.py)
 """
@@ -46,7 +68,8 @@ import numpy as np
 import shap
 from scipy import stats
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import recall_score, precision_score, roc_auc_score
+from sklearn.metrics import recall_score, precision_score, roc_auc_score, average_precision_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -56,20 +79,38 @@ from src.data import load_raw, make_splits, load_selected_features, TARGET_COL
 logger = config.get_logger(__name__)
 
 N_SEEDS = 100
+C_GRID = np.logspace(-3, 2, 10)  # coarser than train.py's search (25 iters x 15 CV folds) --
+                                  # this runs 200x (100 splits x 2 feature sets), so it trades
+                                  # some search resolution for tractable runtime.
 
 
-def _fit(feats, best_params, train_df):
+def _fit(feats, C, class_weight, train_df):
     pipe = Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegression(
-            max_iter=5000,
-            C=best_params.get("clf__C", 1.0),
-            class_weight=best_params.get("clf__class_weight"),
-            random_state=config.RANDOM_STATE,
+            max_iter=5000, C=C, class_weight=class_weight, random_state=config.RANDOM_STATE,
         )),
     ])
     pipe.fit(train_df[feats], train_df[TARGET_COL])
     return pipe
+
+
+def _tune_C(feats, class_weight, train_df, seed):
+    """Quick per-split C search: 5-fold CV, average precision, over C_GRID.
+    Returns this feature set's own best C -- NOT the other arm's."""
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+    best_c, best_score = C_GRID[0], -np.inf
+    for c in C_GRID:
+        pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(max_iter=5000, C=c, class_weight=class_weight, random_state=config.RANDOM_STATE)),
+        ])
+        score = cross_val_score(
+            pipe, train_df[feats], train_df[TARGET_COL], cv=cv, scoring="average_precision", n_jobs=-1,
+        ).mean()
+        if score > best_score:
+            best_score, best_c = score, c
+    return float(best_c)
 
 
 def _top3(pipe, feats, train_df, test_df):
@@ -82,6 +123,47 @@ def _top3(pipe, feats, train_df, test_df):
     return tuple(ranked[:3])
 
 
+def _summarize_metric(full_vals, reduced_vals):
+    """One arm's comparison for one metric: means, paired tests (labeled
+    anti-conservative -- see module docstring), and win/loss counts, which
+    round-three review identified as the more honest summary of the same
+    evidence since the underlying splits overlap."""
+    diff = reduced_vals - full_vals
+    t_stat, p_ttest = stats.ttest_rel(reduced_vals, full_vals)
+    try:
+        w_stat, p_wilcoxon = stats.wilcoxon(reduced_vals, full_vals)
+    except ValueError:
+        # all differences are zero -- wilcoxon is undefined, not an error condition
+        w_stat, p_wilcoxon = 0.0, 1.0
+    full_wins = int(np.sum(full_vals > reduced_vals))
+    reduced_wins = int(np.sum(reduced_vals > full_vals))
+    ties = int(np.sum(full_vals == reduced_vals))
+    return {
+        "mean_full_30_features": round(float(full_vals.mean()), 4),
+        "mean_reduced_16_features": round(float(reduced_vals.mean()), 4),
+        "mean_diff_reduced_minus_full": round(float(diff.mean()), 4),
+        "full_wins": full_wins,
+        "reduced_wins": reduced_wins,
+        "ties": ties,
+        "paired_ttest_p": round(float(p_ttest), 6),
+        "wilcoxon_p": round(float(p_wilcoxon), 6),
+        "significant_at_0.05": bool(p_ttest < 0.05),
+        "note": "p-values here are anti-conservative (all splits resample the same 569 "
+                "rows, so splits are not independent) -- trust full_wins/reduced_wins/ties "
+                "over the exact p-value magnitude.",
+    }
+
+
+def consensus_fraction(top3_list):
+    """Fraction of seeds whose top-3 SHAP feature SET matches the modal (most common) set."""
+    sets = [frozenset(t) for t in top3_list]
+    counts = {}
+    for s in sets:
+        counts[s] = counts.get(s, 0) + 1
+    mode_count = max(counts.values())
+    return mode_count / len(sets), len(counts)
+
+
 def main() -> None:
     config.ensure_dirs()
     df, all_features = load_raw()
@@ -91,6 +173,8 @@ def main() -> None:
         results_summary = json.load(f)
     selected_model = results_summary["selected_model"]
     best_params = results_summary["results"][selected_model]["best_params"]
+    deployed_C = best_params.get("clf__C", 1.0)
+    class_weight = best_params.get("clf__class_weight")
     if selected_model != "logistic_regression":
         logger.warning(
             "Selected model is %s, not logistic_regression -- this analysis "
@@ -101,144 +185,146 @@ def main() -> None:
         )
 
     logger.info(
-        "Running %d splits: fit tuned logistic regression (C=%.4f, "
-        "class_weight=%s from the seed-42 hyperparameter search) on BOTH "
-        "the %d-feature and %d-feature sets, per split -- measuring test-set "
-        "recall/precision/AUC cost and top-3 SHAP-feature consensus benefit.",
-        N_SEEDS, best_params.get("clf__C", 1.0), best_params.get("clf__class_weight"),
-        len(all_features), len(reduced_features),
+        "Running %d splits x 2 arms (matched regularization at the deployed "
+        "C=%.4f, class_weight=%s; and independently tuned per feature set) "
+        "on the %d-feature and %d-feature sets -- measuring test-set "
+        "recall/precision/AUC and top-3 SHAP-feature consensus.",
+        N_SEEDS, deployed_C, class_weight, len(all_features), len(reduced_features),
     )
 
-    rows = {"full": [], "reduced": []}
+    matched_rows = {"full": [], "reduced": []}
+    tuned_rows = {"full": [], "reduced": []}
+    tuned_Cs = {"full": [], "reduced": []}
     top3_full, top3_reduced = [], []
 
     for seed in range(N_SEEDS):
         train_df, _, test_df = make_splits(df, random_state=seed)
         y_test = test_df[TARGET_COL]
 
+        # Arm A: matched regularization -- both feature sets get the SAME
+        # (deployed) hyperparameters. Also the source of the SHAP top-3
+        # consensus numbers below, since that's what the deployed app
+        # actually explains.
         for key, feats, top3_list in [
             ("full", all_features, top3_full),
             ("reduced", reduced_features, top3_reduced),
         ]:
-            pipe = _fit(feats, best_params, train_df)
+            pipe = _fit(feats, deployed_C, class_weight, train_df)
             y_proba = pipe.predict_proba(test_df[feats])[:, 1]
             y_pred = (y_proba >= 0.5).astype(int)
-            rows[key].append({
+            matched_rows[key].append({
                 "recall": recall_score(y_test, y_pred, zero_division=0),
                 "precision": precision_score(y_test, y_pred, zero_division=0),
                 "roc_auc": roc_auc_score(y_test, y_proba),
             })
             top3_list.append(_top3(pipe, feats, train_df, test_df))
 
-    def consensus_fraction(top3_list):
-        """Fraction of seeds whose top-3 SHAP feature SET matches the modal (most common) set."""
-        sets = [frozenset(t) for t in top3_list]
-        counts = {}
-        for s in sets:
-            counts[s] = counts.get(s, 0) + 1
-        mode_count = max(counts.values())
-        return mode_count / len(sets), len(counts)
+        # Arm B: each feature set gets its OWN best C for this split.
+        for key, feats in [("full", all_features), ("reduced", reduced_features)]:
+            c = _tune_C(feats, class_weight, train_df, seed)
+            tuned_Cs[key].append(c)
+            pipe = _fit(feats, c, class_weight, train_df)
+            y_proba = pipe.predict_proba(test_df[feats])[:, 1]
+            y_pred = (y_proba >= 0.5).astype(int)
+            tuned_rows[key].append({
+                "recall": recall_score(y_test, y_pred, zero_division=0),
+                "precision": precision_score(y_test, y_pred, zero_division=0),
+                "roc_auc": roc_auc_score(y_test, y_proba),
+            })
 
-    metrics_report = {}
+        if (seed + 1) % 20 == 0:
+            logger.info("  ...%d/%d splits done", seed + 1, N_SEEDS)
+
+    matched_report, tuned_report = {}, {}
     for metric in ("recall", "precision", "roc_auc"):
-        full_vals = np.array([r[metric] for r in rows["full"]])
-        reduced_vals = np.array([r[metric] for r in rows["reduced"]])
-        diff = reduced_vals - full_vals
-        # NOTE: seeds are independent random re-splits, not k-fold CV folds
-        # sharing a training set, so the standard (not Nadeau-Bengio-corrected)
-        # paired t-test applies -- but adjacent splits still overlap in which
-        # rows land in train/test, so treat this as a good approximation, not
-        # an exact independence guarantee. A signed-rank test is included too
-        # since it doesn't assume normal differences.
-        t_stat, p_ttest = stats.ttest_rel(reduced_vals, full_vals)
-        w_stat, p_wilcoxon = stats.wilcoxon(reduced_vals, full_vals)
-        metrics_report[metric] = {
-            "mean_full_30_features": round(float(full_vals.mean()), 4),
-            "mean_reduced_16_features": round(float(reduced_vals.mean()), 4),
-            "mean_diff_reduced_minus_full": round(float(diff.mean()), 4),
-            "paired_ttest_p": round(float(p_ttest), 6),
-            "wilcoxon_p": round(float(p_wilcoxon), 6),
-            "significant_at_0.05": bool(p_ttest < 0.05),
-        }
+        matched_report[metric] = _summarize_metric(
+            np.array([r[metric] for r in matched_rows["full"]]),
+            np.array([r[metric] for r in matched_rows["reduced"]]),
+        )
+        tuned_report[metric] = _summarize_metric(
+            np.array([r[metric] for r in tuned_rows["full"]]),
+            np.array([r[metric] for r in tuned_rows["reduced"]]),
+        )
         logger.info(
-            "  %-10s full=%.4f reduced=%.4f diff=%+.4f (paired t-test p=%.2e, %s)",
-            metric, full_vals.mean(), reduced_vals.mean(), diff.mean(), p_ttest,
-            "SIGNIFICANT" if p_ttest < 0.05 else "not significant",
+            "  %-10s matched: full=%.4f reduced=%.4f (%d/%d/%d win/win/tie)  |  "
+            "tuned: full=%.4f reduced=%.4f (%d/%d/%d win/win/tie)",
+            metric,
+            matched_report[metric]["mean_full_30_features"], matched_report[metric]["mean_reduced_16_features"],
+            matched_report[metric]["full_wins"], matched_report[metric]["reduced_wins"], matched_report[metric]["ties"],
+            tuned_report[metric]["mean_full_30_features"], tuned_report[metric]["mean_reduced_16_features"],
+            tuned_report[metric]["full_wins"], tuned_report[metric]["reduced_wins"], tuned_report[metric]["ties"],
         )
 
     frac_full, n_unique_full = consensus_fraction(top3_full)
     frac_reduced, n_unique_reduced = consensus_fraction(top3_reduced)
     logger.info(
-        "Top-3 SHAP feature-set consensus across %d splits: full=%d/%d splits "
-        "match the modal set (%d distinct sets seen), reduced=%d/%d splits "
-        "match the modal set (%d distinct sets seen).",
+        "Top-3 SHAP feature-set consensus (matched-regularization arm) across %d splits: "
+        "full=%d/%d splits match the modal set (%d distinct sets seen), "
+        "reduced=%d/%d splits match the modal set (%d distinct sets seen).",
         N_SEEDS, int(round(frac_full * N_SEEDS)), N_SEEDS, n_unique_full,
         int(round(frac_reduced * N_SEEDS)), N_SEEDS, n_unique_reduced,
     )
 
-    # Build the summary FROM the numbers just computed, not as a hardcoded
-    # narrative -- this script exists specifically to replace an asserted
-    # conclusion ("no meaningful cost") with a measured one, so its own
-    # summary field has to follow the same rule instead of assuming this
-    # run reproduces round-two's exact numbers (they may not, e.g. under a
-    # different sklearn version -- see README's note on unpinned deps).
-    significant_metrics = [m for m, r in metrics_report.items() if r["significant_at_0.05"]]
-    worse_metrics = [m for m in significant_metrics if metrics_report[m]["mean_diff_reduced_minus_full"] < 0]
-    better_metrics = [m for m in significant_metrics if metrics_report[m]["mean_diff_reduced_minus_full"] > 0]
-    if worse_metrics:
-        cost_sentence = (
-            f"On THIS run, the 16-feature (VIF-reduced) model is measurably and "
-            f"statistically significantly worse than the 30-feature model on: "
-            f"{', '.join(worse_metrics)} (see performance_cost_reduced_vs_full). "
-            f"That is a real cost, not noise."
-        )
-    elif better_metrics:
-        cost_sentence = (
-            f"On THIS run, the 16-feature model was significantly BETTER on: "
-            f"{', '.join(better_metrics)} -- re-check performance_cost_reduced_vs_full "
-            f"before trusting this, it does not match round-two review's finding "
-            f"and may indicate an environment or methodology difference worth "
-            f"investigating rather than good news to accept at face value."
-        )
-    else:
-        cost_sentence = (
-            "On THIS run, no metric showed a statistically significant "
-            "difference between the 16-feature and 30-feature models -- this "
-            "does not match round-two external review's finding of a "
-            "significant cost, and should be treated as a discrepancy to "
-            "investigate (e.g. dependency versions, see README) rather than "
-            "as evidence the earlier finding was wrong."
-        )
+    # Build the summary FROM the numbers just computed for BOTH arms, not a
+    # hardcoded narrative -- and lead with the "tuned" arm since that's the
+    # one that actually answers "which model should ship."
+    def arm_verdict(report, arm_label):
+        sig = [m for m, r in report.items() if r["significant_at_0.05"]]
+        worse = [m for m in sig if report[m]["mean_diff_reduced_minus_full"] < 0]
+        better = [m for m in sig if report[m]["mean_diff_reduced_minus_full"] > 0]
+        if worse:
+            return (f"[{arm_label}] the 16-feature model is worse on {', '.join(worse)} "
+                     f"(win/loss counts: " +
+                     ", ".join(f"{m} {report[m]['full_wins']}/{report[m]['reduced_wins']}/{report[m]['ties']}" for m in worse) +
+                     ").")
+        if better:
+            return f"[{arm_label}] the 16-feature model is BETTER on {', '.join(better)}."
+        return f"[{arm_label}] no metric shows a significant difference."
+
+    tuned_verdict = arm_verdict(tuned_report, "independently tuned (which model to ship)")
+    matched_verdict = arm_verdict(matched_report, "matched regularization (isolating the feature set alone)")
 
     stability_gap = frac_reduced - frac_full
     if stability_gap > 0.1:
         benefit_sentence = (
-            f"It is also far more stable in which 3 features its SHAP "
-            f"explanation names as most important across resampled training "
-            f"data ({frac_reduced:.0%} vs {frac_full:.0%} of splits matching "
-            f"the modal top-3 set) -- a real, measured benefit the untuned "
-            f"feature_analysis.py comparison cannot see."
+            f"The 16-feature model is far more stable in which 3 features its SHAP "
+            f"explanation names as most important across resampled training data "
+            f"({frac_reduced:.0%} vs {frac_full:.0%} of splits matching the modal "
+            f"top-3 set) -- a real, measured benefit neither performance comparison "
+            f"above can see."
         )
     elif stability_gap < -0.1:
         benefit_sentence = (
-            f"Contrary to round-two review's finding, THIS run found the "
-            f"30-feature model's SHAP top-3 MORE stable ({frac_full:.0%} vs "
-            f"{frac_reduced:.0%}) -- treat as a discrepancy to investigate, "
-            f"not as settled."
+            f"THIS run found the 30-feature model's SHAP top-3 MORE stable "
+            f"({frac_full:.0%} vs {frac_reduced:.0%}) -- contrary to prior findings, "
+            f"treat as a discrepancy to investigate, not as settled."
         )
     else:
         benefit_sentence = (
-            f"SHAP top-3 stability was roughly comparable between the two "
-            f"feature sets on this run ({frac_reduced:.0%} reduced vs "
-            f"{frac_full:.0%} full) -- no clear stability benefit observed here."
+            f"SHAP top-3 stability was roughly comparable between the two feature "
+            f"sets on this run ({frac_reduced:.0%} reduced vs {frac_full:.0%} full)."
         )
 
     report = {
         "n_splits": N_SEEDS,
         "model": selected_model,
-        "hyperparameters_used": best_params,
-        "performance_cost_reduced_vs_full": metrics_report,
+        "deployed_hyperparameters": best_params,
+        "arm_a_matched_regularization": {
+            "description": "Both feature sets fit with the SAME hyperparameters (the deployed C). "
+                            "Answers: 'does dropping features cost anything, holding regularization fixed?' "
+                            "NOT the deployment question -- see arm_b for that.",
+            "performance": matched_report,
+        },
+        "arm_b_independently_tuned": {
+            "description": "Each feature set gets its OWN best C per split (quick 5-fold CV search "
+                            "over a 10-point log-spaced grid). Answers the actual deployment question: "
+                            "'if each candidate is tuned properly, which wins?'",
+            "mean_tuned_C_full_30_features": round(float(np.mean(tuned_Cs["full"])), 4),
+            "mean_tuned_C_reduced_16_features": round(float(np.mean(tuned_Cs["reduced"])), 4),
+            "performance": tuned_report,
+        },
         "shap_top3_consensus": {
+            "computed_on": "arm_a_matched_regularization (the deployed model's actual C)",
             "full_30_features": {
                 "fraction_matching_modal_set": round(frac_full, 4),
                 "n_distinct_sets_across_splits": n_unique_full,
@@ -249,16 +335,18 @@ def main() -> None:
             },
         },
         "summary": (
-            f"{cost_sentence} {benefit_sentence} Whether a recall/precision/AUC "
-            f"cost is worth an explanation-stability benefit (or vice versa) is "
-            f"a judgment call, not a fact this script can settle -- the honest "
-            f"thing to do is state both sides with the actual numbers from this "
-            f"run, which is what this report is for."
+            f"{tuned_verdict} {matched_verdict} {benefit_sentence} Whether a "
+            f"recall/precision/AUC cost (arm_b) is worth an explanation-stability "
+            f"benefit is a judgment call this script can't settle, but arm_b is "
+            f"the comparison that should drive a 'which model to ship' decision -- "
+            f"arm_a is included because it isolates a different, also-useful "
+            f"question (does regularization alone explain the gap?)."
         ),
     }
     with open(config.MODELS_DIR / "feature_tradeoff_report.json", "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Saved %s", config.MODELS_DIR / "feature_tradeoff_report.json")
+    logger.info("SUMMARY: %s", report["summary"])
 
 
 if __name__ == "__main__":

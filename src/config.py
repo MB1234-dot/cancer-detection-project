@@ -44,6 +44,13 @@ VAL_SIZE = 0.20
 # inflated by collinearity with other features."
 VIF_THRESHOLD = 10.0
 
+# How much average-precision cost we're willing to accept from dropping
+# collinear features, before we'd rather keep the full feature set. This is
+# the same magnitude the project's original (naive, pre-review) check used
+# as a bare "delta > -0.01" cutoff; it's now used as a proper non-inferiority
+# margin instead of an unstated one -- see feature_analysis.py.
+VIF_COST_EQUIVALENCE_MARGIN = 0.01
+
 # --- model selection -------------------------------------------------------
 CV_SPLITS = 5
 CV_REPEATS = 3          # RepeatedStratifiedKFold: more stable estimates on a

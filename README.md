@@ -1,5 +1,7 @@
 # Breast Mass Malignancy Risk Estimator
 
+[![CI](https://github.com/MB1234-dot/cancer-detection-project/actions/workflows/ci.yml/badge.svg)](https://github.com/MB1234-dot/cancer-detection-project/actions/workflows/ci.yml)
+
 **Live demo:** https://cancer-detection-project.streamlit.app/
 
 A machine learning project built around the questions that actually matter in
@@ -75,19 +77,53 @@ edited out, because the second one is more informative than the first.
    one's fix is measurably worse than the 30-feature model on recall,
    precision, and ROC-AUC** — a real cost that the untuned pre-tuning
    comparison in `feature_analysis.py` doesn't measure and can't see.
-7. **Round-two fixes (this version):** a VIF mutation-tested regression
-   test, corrected stability-report accounting, a proper significance test
-   replacing the old bare `delta > -0.01` rule, and a new post-hoc script
-   that measures — on the actual shipped model — both the real performance
-   cost and a real, previously-unmeasured explanation-stability benefit of
-   the reduced feature set. See below.
+7. **Round-two fixes:** a VIF mutation-tested regression test, corrected
+   stability-report accounting, a proper significance test replacing the
+   old bare `delta > -0.01` rule, and a new post-hoc script that measures —
+   on the actual shipped model — both the real performance cost and a
+   real, previously-unmeasured explanation-stability benefit of the
+   reduced feature set. See below.
+8. **Deployment found a fourth bug the pipeline never could.** Minutes
+   after first deploying to Streamlit Community Cloud, the live app
+   crashed on load: `ValueError` from `"95% CI: [%.3f, %.3f]" % (...)` —
+   an unescaped literal `%` in a Python `%`-format string, which the `%`
+   operator tried to parse as a format directive. All 18 tests at that
+   point were pipeline/model tests; none of them ever executed `app.py`,
+   so this shipped straight through review, mutation testing, and CI
+   without anyone (or anything) running the one file that's actually the
+   product. Fixed by switching those lines to f-strings and adding
+   `tests/test_app.py`, which uses Streamlit's `AppTest` framework to
+   actually execute the app and every button/dropdown interaction — the
+   kind of test that would have caught this before it ever reached a
+   user. 21 tests total now.
+9. **Independent external adversarial review, round three** — same
+   process, given the actual live public repo this time (not a package
+   description), and it found something more important than any single
+   code bug: **the crash fix from step 8, despite being correct and
+   verified locally, had never actually been pushed to GitHub.** The
+   reviewer cloned the public repo and reproduced the exact live crash,
+   because the commit fixing it existed only on this machine. Root cause:
+   the GitHub credential used to push was cleared for security after the
+   first successful push, and the *next* push attempt failed outright
+   (`could not read Username for 'https://github.com'`) with no one
+   watching for that failure — a clear illustration of why "the agent
+   said it pushed" is not evidence something is actually live; only
+   `git ls-remote` against the real remote (or checking GitHub yourself)
+   is. The review also found three real, separate issues, all now fixed:
+   a methodology bug in `feature_tradeoff_analysis.py` (below), inverted
+   significance-test logic in `feature_analysis.py` (below), and a
+   dependency lockfile (`requirements.lock`) that nothing in CI, Docker,
+   or Streamlit Cloud actually installed from — it existed but was never
+   consumed. See **"Round three"** below for full detail on each.
 
 If you're evaluating this repo, the honest thing to say about it is not
-"rigorous ML pipeline." It's "a pipeline that made real mistakes, had them
-caught by adversarial review rather than self-review twice in a row, and was
-fixed with the fixes checked back in and mutation-tested." That's a
-different, more defensible claim, and it's the one this README is trying to
-actually support rather than assert.
+"rigorous ML pipeline." It's "a pipeline that made real mistakes, had some
+caught by adversarial review, one caught by mutation testing, and one that
+got all the way to a live crash before anyone noticed the app itself had
+zero test coverage — and each time, the response was a real fix plus a
+test that would catch it next time, not just a patch." That's a different,
+more defensible claim, and it's the one this README is trying to actually
+support rather than assert.
 
 ## What changed after external review
 
@@ -104,9 +140,21 @@ was. The corrected reduced set costs −0.0031 average precision on an
 **untuned baseline model** (0.9934 → 0.9903) — round two's decision rule
 here was a bare `delta > -0.01` inequality with no notion of statistical
 power, which round-two review correctly flagged as the most important
-remaining issue. It's since been replaced with a proper Nadeau-Bengio
-significance test (`nadeau_bengio_p=0.336`, not significant), but see
-**"Round two"** below: that test only covers this untuned, pre-tuning
+remaining issue at the time. That was first replaced with a plain
+significance test against zero, which round-three review then correctly
+flagged as backwards: "not significantly different from zero" is not
+evidence of equivalence, especially with a conservative correction making
+genuine costs harder to detect. **It's now a proper one-sided
+non-inferiority test** (`nadeau_bengio_noninferiority_test` in
+`src/stats_utils.py`, the one-sided form of TOST equivalence testing): it
+requires *positive* evidence that the cost is no worse than a declared
+1-point-of-average-precision tolerance before shipping the reduced set,
+rather than treating an inconclusive result as a pass. On the current data
+that positive evidence exists (one-sided Nadeau-Bengio p=0.023 for
+"cost ≤ 1pp", see `models/vif_report.json`), so the reduced set still
+ships — but now because non-inferiority was demonstrated, not because a
+cost merely failed to reach significance. See **"Round two"** and
+**"Round three"** below: this test only covers this untuned, pre-tuning
 comparison, and a separate post-hoc measurement against the *actual*
 shipped model found a real trade-off this comparison can't see. **The model
 trains on the VIF-corrected 16-feature set**, not the full 30. The
@@ -233,35 +281,90 @@ SHAP top-3 feature-set consensus across 100 splits:
   16-feature model:  82/100 splits match the modal top-3 set (7 distinct sets seen)
 ```
 
-**This independent reproduction did NOT find a statistically significant
-performance cost** in this environment (pinned to the dependency versions
-in `requirements.lock`) — which does not match round two's own claim of a
-significant cost (p<1e-6). That's a genuine, unresolved discrepancy, not a
-result to quietly prefer: it's flagged here rather than smoothed over,
-and the most likely explanation is a methodology or dependency-version
-difference (see the unpinned-dependency limitation below) rather than
-either side being wrong. What *did* reproduce cleanly, and by a wide
-margin, is the SHAP stability finding: the 16-feature model's top-3
-explanation is consistent across resampled training data roughly 14x more
-often than the 30-feature model's (82% vs 6%). **The honest framing is a
-trade, not a free lunch:** the reduced feature set buys a much more
-trustworthy explanation, a real recall/precision/AUC cost may or may not
-be part of that price depending on environment, and this project ships the
-reduced set for the explainability benefit while saying exactly that
-instead of "no meaningful cost."
+**Update (round three): the discrepancy above is now resolved — it was a
+methodology bug, not a dependency-version difference.** `feature_tradeoff_analysis.py`
+was applying ONE shared hyperparameter (`C=8.859`, tuned specifically for
+the 16-feature set) to BOTH feature sets in the comparison. That ran the
+30-feature model at roughly 21x weaker regularization than it would choose
+for itself (`C=0.428` when tuned independently) — precisely the regime
+where multicollinearity damages a linear model most — which biased this
+"matched regularization" comparison against detecting a real difference.
+Confirmed bit-identical results under both sklearn 1.8.0 and 1.9.0, ruling
+out the dependency-version theory. **Fixed:** the script now reports
+*two* arms explicitly instead of silently picking one — see the updated
+table below. Arm B (each feature set independently tuned, the actual
+deployment-relevant comparison) reproduces round two's originally-claimed
+cost; Arm A (both sets held at the same, deployed C) is kept because it
+answers a genuinely different question — "does regularization strength
+alone explain the gap?" — not because it's the more relevant one. What
+did reproduce cleanly the whole time, in both arms, is the SHAP stability
+finding: the 16-feature model's top-3 explanation is consistent across
+resampled training data roughly 14x more often than the 30-feature
+model's (82% vs 6%). **The honest framing is a trade, not a free lunch:**
+the reduced feature set buys a much more trustworthy explanation at a
+real, now-confirmed cost to recall/precision/ROC-AUC, and this project
+ships the reduced set for the explainability benefit while saying exactly
+that.
 
 **Also fixed:** the untuned pre-tuning decision rule in
-`feature_analysis.py` no longer uses a bare `delta > -0.01` inequality —
-it now runs the same Nadeau-Bengio significance test used for model-family
-selection (`nadeau_bengio_p=0.336`, not significant, see above), with an
-explicit code comment and log line pointing at
-`feature_tradeoff_analysis.py` so nobody mistakes that untuned check for a
-guarantee about the deployed model.
+`feature_analysis.py` no longer uses a bare `delta > -0.01` inequality,
+and — after round-three review flagged the first replacement as
+backwards (see the VIF section above) — no longer uses a plain
+significance-against-zero test either. It now runs a proper one-sided
+non-inferiority test with an explicit code comment and log line pointing
+at `feature_tradeoff_analysis.py` so nobody mistakes that untuned check
+for a guarantee about the deployed model.
 
-## Round three: the tests all passed and the live app was down anyway
+## Round three: what a third review found — and what changed
 
-Every finding above concerns methodology. This one doesn't, and it is
-arguably the most embarrassing of the lot.
+Round three was given the live public GitHub repo directly (not a
+description of it) and asked to independently verify everything claimed
+above. What it found, in order of importance:
+
+1. **The round-two crash fix never reached GitHub.** Confirmed and fixed —
+   see step 9 in "Process" above. This is the most important finding of
+   the three rounds so far, precisely because it isn't a code bug at all:
+   every fix described in this README was correct and locally verified,
+   and none of that mattered until it was actually confirmed live on the
+   real remote.
+2. **The `feature_tradeoff_analysis.py` methodology bug** described above —
+   real, root-caused, and fixed with an explicit two-arm comparison.
+3. **The inverted significance-test logic** in `feature_analysis.py` —
+   real, and fixed with a proper non-inferiority test, described above.
+4. **`requirements.lock` was decorative** — it existed and was accurate,
+   but nothing in `.github/workflows/ci.yml`, `Dockerfile`, or Streamlit
+   Community Cloud (which only ever reads `requirements.txt`) actually
+   installed from it, so it provided no real reproducibility guarantee.
+   **Fixed:** `requirements.txt` is now pinned to exact versions (so
+   Streamlit Cloud gets them too), and CI/Docker now install from
+   `requirements.lock` directly for the full transitive-dependency
+   pin.
+5. **`tests/test_app.py` had weak coverage** — it only asserted "no
+   exception," and its example-patient test used a patient whose
+   prediction never exercised the default/tuned-threshold-disagreement
+   code path (9 of 114 test patients hit that branch; the test used one
+   of the other 105). **Fixed:** the three `AppTest` tests now also
+   assert on rendered content (sidebar metrics, prediction metrics, info
+   banners), and the example-patient test uses a patient chosen
+   specifically to land in the disagreement band.
+6. **A hyperparameter-search non-determinism I initially flagged myself
+   was refuted.** Two pipeline runs had shown the same random-forest CV
+   score with different winning hyperparameters, which I raised as a
+   possible reproducibility concern. Round three re-ran the search and
+   found it's exactly deterministic within a fixed environment
+   (bit-identical to 10 decimal places); the original observation was
+   most likely an artifact of comparing rounded values across different
+   dependency versions — which is really the same root cause as finding
+   4 above, not a new one.
+
+All fixes in this round were verified by actually re-running the affected
+scripts and the full test suite, not just read for plausibility — see
+each subsection above for the specific before/after numbers.
+
+### In detail: the tests all passed and the live app was down anyway
+
+Findings 2-5 above concern methodology. Finding 1 doesn't, and it is
+arguably the most instructive of the lot, so it's worth spelling out.
 
 `app/app.py` built several strings with `%`-formatting that contained a
 literal percent sign — `"95% CI: [%.3f, %.3f]"`. Python does not read that
@@ -289,13 +392,21 @@ The fix converts the affected strings to f-strings, which removes the
 failure mode rather than escaping around it (`%%` would also work, but
 leaves the next person one keystroke from reintroducing it).
 
-`tests/test_app.py` now covers this in two layers: a static AST check that
-fails if `%`-formatting on a string literal reappears in `app.py` (integer
-modulo is correctly not flagged), and `AppTest`-based rendering tests that
-assert on actual content — the disclaimer, the sidebar metrics, the CI
-tooltip text, the inputs, and a `Predict` click yielding a probability in
-range. The earlier version of that file only asserted `not at.exception`,
-which is close to worthless: an app that renders nothing at all passes it.
+`tests/test_app.py` now covers this in three layers:
+
+1. **A static AST check** that fails if `%`-formatting on a string literal
+   reappears anywhere in `app.py` (integer modulo, as in `i % cols_per_row`,
+   is correctly not flagged). This catches the bug class without needing to
+   render anything.
+2. **`AppTest` rendering tests with content assertions** — the disclaimer,
+   the sidebar metrics, the CI tooltip text, the inputs, and a `Predict`
+   click yielding a probability in range. The original version of this file
+   only asserted `not at.exception`, which is close to worthless: an app
+   that renders nothing at all passes it.
+3. **A threshold-disagreement test** using Patient #3, whose predicted
+   probability (~0.64) lands in the band where the default and tuned
+   thresholds disagree — 9 of 114 test patients do. The earlier test used
+   Patient #0 (probability ~0.0001), which never reaches that branch.
 
 Both directions were checked. The new tests fail against the pre-fix
 `app.py`, reproducing the exact production `ValueError`, and pass against
@@ -338,7 +449,7 @@ Test set: 114 patients, 42 malignant. See `models/results_summary.json`,
 | Features dropped (VIF ≥ 10) | 23 | 14 |
 | Features retained | 7 (all "error" features + 1 "worst") | 16 (spans mean/error/worst) |
 | Does `mean radius` survive? | No (called the #1 offender) | **Yes** |
-| Accuracy cost of pruning (untuned baseline) | −0.0159 AP (rejected: kept full 30) | −0.0031 AP, p=0.336 not significant (accepted: **now the deployed feature set**) |
+| Accuracy cost of pruning (untuned baseline) | −0.0159 AP (rejected: kept full 30) | −0.0031 AP, non-inferiority demonstrated within a 1pp tolerance (p=0.023) (accepted: **now the deployed feature set**) |
 
 Full detail in `models/vif_report.json`. The "accuracy cost" row above is
 the untuned, pre-tuning check only — see the next section for what the
@@ -346,26 +457,40 @@ actual tuned model gives up and gains.
 
 ### Feature-set trade-off, measured on the real deployed model
 
-`src/feature_tradeoff_analysis.py` (added after round-two review) fits the
-actual tuned hyperparameters on both feature sets across 100 splits:
+`src/feature_tradeoff_analysis.py` fits both feature sets across 100
+splits in two ways: **Arm A** (both sets forced to the same, deployed
+hyperparameters — isolates "does the feature set alone matter, holding
+regularization fixed?") and **Arm B** (each feature set gets its own
+independently-tuned hyperparameters — the actual deployment-relevant
+question, "if each candidate is tuned properly, which wins?"). Round
+three found Arm A alone was biased against detecting a real difference
+(see "Round three" above); both are now reported. Win/loss counts across
+the 100 splits are the primary evidence here, not the p-values, which are
+anti-conservative because every split resamples the same 569 rows (see
+`models/feature_tradeoff_report.json`'s `"note"` fields):
 
-| | 30 features (full) | 16 features (deployed) |
+| | Arm A: matched regularization | Arm B: independently tuned (ship decision) |
 |---|---|---|
-| Test recall | 95.26% | 95.14% (diff not significant, p=0.556) |
-| Test precision | 94.84% | 94.54% (diff not significant, p=0.361) |
-| Test ROC-AUC | 0.9893 | 0.9893 (diff not significant, p=0.895) |
-| SHAP top-3 consensus (100 splits) | 6% | **82%** |
+| Test recall | full=95.26%, reduced=95.14% (23W/21L/56T, not significant) | full=96.07%, reduced=95.45% (32W/11L/57T, **significant, full wins**) |
+| Test precision | full=94.84%, reduced=94.54% (46W/36L/18T, not significant) | full=96.94%, reduced=95.37% (59W/16L/25T, **significant, full wins**) |
+| Test ROC-AUC | full=0.9893, reduced=0.9893 (53W/40L/7T, not significant) | full=0.9942, reduced=0.9908 (71W/26L/3T, **significant, full wins**) |
+| SHAP top-3 consensus (100 splits, Arm A) | 6% (full) | **82%** (reduced) |
 
-In this environment, the performance difference is not statistically
-significant — which does not match round-two review's own reproduction (it
-found a significant cost, p<1e-6). That discrepancy is unresolved and
-stated plainly rather than picked over silently; the leading suspect is a
-dependency-version or methodology difference (see Limitations). What's
-unambiguous is the explanation-stability benefit: the deployed model's
-top-3 SHAP features land on the same 3 features in 82/100 resampled splits,
-versus 6/100 for the full feature set — collinearity in the full set lets
-credit shift almost arbitrarily between near-duplicate features run to run.
-Full detail in `models/feature_tradeoff_report.json`.
+Arm B is the comparison that should drive a "which model to ship"
+decision, and it shows a real, consistent cost to the reduced feature
+set — the full model wins more resampled splits than it loses on every
+metric. This now reproduces round two's originally-claimed finding
+(previously thought to be an unresolved environment discrepancy; see
+"Round three" above for the actual root cause). What's unambiguous
+either way is the explanation-stability benefit: the deployed model's
+top-3 SHAP features land on the same 3 features in 82/100 resampled
+splits, versus 6/100 for the full feature set — collinearity in the full
+set lets credit shift almost arbitrarily between near-duplicate features
+run to run. **This project ships the 16-feature model anyway**, treating
+the measured explanation-stability benefit as worth the measured
+performance cost for an educational/portfolio demo where interpretability
+is a stated goal — not because the cost turned out to be zero. Full
+detail in `models/feature_tradeoff_report.json`.
 
 ### What drives the model
 
@@ -380,15 +505,19 @@ mattered," not as precise credit to one specific feature. See
 
 ## Engineering practices
 
-- **Tests** (`tests/`, 18 passing): data integrity, split non-overlap and
+- **Tests** (`tests/`, 21 passing): data integrity, split non-overlap and
   stratification, split reproducibility, model output shape/range,
   determinism, threshold-selection edge cases (including the corrected
   min-statistic documentation test), a direct regression test against the
-  original leakage bug that exercises the real entry point, and a
+  original leakage bug that exercises the real entry point, a
   mutation-tested regression test for the VIF intercept fix (added after
   round-two review found this was the one bug with zero test coverage;
   verified the same way round two verified it — reintroducing the bug
-  makes the new test fail with the exact known buggy value).
+  makes the new test fail with the exact known buggy value), and
+  (`test_app.py`) three Streamlit `AppTest` smoke tests that actually
+  execute `app.py` and simulate button/dropdown interactions — added after
+  a real `%`-format bug crashed the live deployed app despite every other
+  test passing, because none of them ran the app itself.
 - **CI** (`.github/workflows/ci.yml`): runs the full pipeline (through
   `stability_analysis.py`, `feature_tradeoff_analysis.py`, and
   `shap_explain.py`) and test suite on every push, then builds the Docker
@@ -409,14 +538,17 @@ mattered," not as precise credit to one specific feature. See
   is designed to build and smoke-test the image on every push — treat that
   as "designed to verify" until you've seen a green run in your own Actions
   tab, not as an assertion that it already has.
-- **Pinned dependency snapshot** (`requirements.lock`, generated via
-  `pip freeze`): round two noted that `requirements.txt`'s `>=`-only
-  constraints make some quoted statistics environment-dependent (a
-  Nadeau-Bengio p-value that differs between sklearn versions, for
-  example). `requirements.lock` records the exact versions this README's
-  numbers were produced with (`pip install -r requirements.lock` for an
-  exact reproduction); `requirements.txt` is left loose for normal
-  development/CI use.
+- **Pinned dependencies, actually enforced** (`requirements.lock`,
+  `requirements.txt`): round two noted that loose `>=`-only constraints
+  make some quoted statistics environment-dependent (a Nadeau-Bengio
+  p-value that differs between sklearn versions, for example) and added
+  `requirements.lock` (exact versions via `pip freeze`) — but round three
+  found that lockfile was decorative: nothing in CI, Docker, or Streamlit
+  Community Cloud (which only reads `requirements.txt`) actually installed
+  from it. **Fixed:** `requirements.txt` itself is now pinned to exact
+  versions (so Streamlit Cloud's install matches too), and both
+  `.github/workflows/ci.yml` and `Dockerfile` install from
+  `requirements.lock` for the full pinned transitive-dependency closure.
 
 ## Project structure
 
@@ -424,7 +556,7 @@ mattered," not as precise credit to one specific feature. See
 ├── src/
 │   ├── config.py                    # central config, incl. corrected VIF/target-recall notes
 │   ├── data.py                       # load_raw, make_splits, load_splits
-│   ├── stats_utils.py                 # Nadeau-Bengio corrected significance test
+│   ├── stats_utils.py                 # Nadeau-Bengio significance + non-inferiority tests
 │   ├── eda.py                         # exploratory analysis
 │   ├── split_data.py                  # train/val/test split (the original leakage fix)
 │   ├── feature_analysis.py            # VIF multicollinearity analysis (intercept-corrected, significance-tested decision)
@@ -435,12 +567,15 @@ mattered," not as precise credit to one specific feature. See
 │   └── shap_explain.py                 # global + per-patient SHAP explanations
 ├── tests/
 │   ├── test_data.py             # split correctness, stratification, reproducibility
-│   └── test_pipeline.py          # model contracts, threshold edge cases, VIF + leakage regression tests
+│   ├── test_pipeline.py          # model contracts, threshold edge cases, VIF + leakage regression tests
+│   └── test_app.py                # AppTest smoke tests -- actually runs app.py, not just src/
 ├── app/app.py                    # Streamlit demo (defaults to the recommended threshold)
 ├── .github/workflows/ci.yml
 ├── Dockerfile
-├── requirements.lock              # exact pinned versions this README's numbers were produced with
-├── AI_REVIEW_PACKAGE.md           # the package sent for external adversarial review
+├── requirements.txt                # pinned exact versions (installed by Streamlit Community Cloud)
+├── requirements.lock               # full pinned transitive closure (installed by CI/Docker)
+├── AI_REVIEW_PACKAGE.md            # round-one review package
+├── AI_REVIEW_PACKAGE_ROUND3.md     # round-three review package
 ```
 
 ## Running it yourself
@@ -458,7 +593,7 @@ python3 -m src.stability_analysis
 python3 -m src.feature_tradeoff_analysis
 python3 -m src.shap_explain
 
-pytest tests/ -v                  # 18 tests
+pytest tests/ -v                  # 21 tests
 
 streamlit run app/app.py          # run from project root
 ```
@@ -509,19 +644,29 @@ cohort.
   seed was judged too expensive for a 364-row training set to repeat
   hundreds of times). Both are therefore a **lower bound** on true
   end-to-end instability, not the complete picture.
-- The independent reproduction of round two's feature-tradeoff finding
-  (see "Round two" above) did NOT find a statistically significant
-  performance cost in this pinned environment, contradicting round two's
-  own claim of p<1e-6. This discrepancy is unresolved — most likely a
-  dependency-version or methodology difference — and is stated here
-  rather than silently resolved in either direction.
-- This README, and the analysis behind it, has now gone through two rounds
-  of external adversarial review and correction, including mutation
-  testing in round two. That doesn't mean it's now correct — it means it's
-  been checked twice, and the second check found real problems the first
-  one missed (an untested bug, a broken report, an unmeasured trade-off).
-  Treat any specific claim you're relying on as something to re-verify,
-  not as settled, and assume a third review would likely find more.
+- The non-inferiority test in `feature_analysis.py` (see "What changed
+  after external review" above) uses a declared 1-percentage-point
+  average-precision tolerance. That tolerance is a judgment call, not a
+  derived quantity — a different, defensible tolerance could flip the
+  upstream feature-selection decision. `feature_tradeoff_analysis.py`'s
+  Arm B remains the more important, post-hoc measurement of what the
+  actual shipped model gives up.
+- Win/loss counts across the 100 splits in `feature_tradeoff_analysis.py`
+  are the primary evidence, but the splits all resample the same
+  569-row dataset and aren't fully independent — the reported p-values
+  are anti-conservative (more significant-looking than a fully rigorous
+  test would produce). This is called out directly in the JSON output's
+  `"note"` fields rather than left implicit.
+- This README, and the analysis behind it, has now gone through three
+  rounds of external adversarial review and correction, including
+  mutation testing in round two. That doesn't mean it's now correct — it
+  means it's been checked three times, and each check found real problems
+  the previous ones missed (an untested bug, a broken report, an
+  unmeasured trade-off, and — most importantly — a verified-but-unpushed
+  fix that meant the live app was still broken after round two "fixed"
+  it). Treat any specific claim you're relying on as something to
+  re-verify, not as settled, and assume a fourth review would likely find
+  more.
 
 ## Possible next steps
 
@@ -532,9 +677,6 @@ cohort.
   drift monitoring, alongside the Streamlit demo.
 - Explore an LLM/RAG layer over medical literature (e.g. PubMed abstracts)
   as a separate, distinct project.
-- Resolve the unreproduced feature-tradeoff significance discrepancy
-  (this repo's environment vs. round two's) by pinning both sides to the
-  same `requirements.lock` and re-running the comparison.
 - Re-derive `TARGET_RECALL` from the validation positive count at runtime
   (or drop the target-recall abstraction entirely in favor of directly
   reasoning about achievable order statistics) instead of a hardcoded

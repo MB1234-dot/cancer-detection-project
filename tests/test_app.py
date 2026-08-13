@@ -12,15 +12,18 @@ literal percent sign, and raises:
 
     ValueError: unsupported format character 'C' (0x43) at index 4
 
-Two layers of defence here:
+Three layers of defence here:
 
 1. `test_no_percent_format_on_string_literals` -- a static AST check that fails
-   if anyone reintroduces %-formatting on a string literal in app.py. This is
-   fast and needs no model artifacts.
-2. The AppTest tests -- actually render the app and assert on its *content*,
-   not merely that it did not raise. An earlier version of this file only
-   asserted `not at.exception`, which is a weak guarantee: a Streamlit app that
-   silently renders nothing also passes that check.
+   if anyone reintroduces %-formatting on a string literal in app.py. Fast,
+   needs no model artifacts.
+2. The AppTest rendering tests -- actually render the app and assert on its
+   *content*, not merely that it did not raise. An earlier version of this
+   file only asserted `not at.exception`, which is a weak guarantee: a
+   Streamlit app that silently renders nothing also passes that check.
+3. `test_threshold_disagreement_patient_renders_warning` -- exercises the
+   default/tuned threshold-disagreement branch, which the other tests never
+   reach.
 """
 import ast
 from pathlib import Path
@@ -28,6 +31,13 @@ from pathlib import Path
 import pytest
 
 APP_PATH = Path(__file__).resolve().parent.parent / "app" / "app.py"
+
+# Patient #3 in the held-out test set (predicted probability of malignancy
+# ~=0.64) sits in the band where the default (0.5) and validation-tuned
+# thresholds disagree -- 9 of the 114 test patients fall in this band. An
+# earlier version of this test used Patient #0 (probability ~0.0001), which
+# never exercises the threshold-disagreement branch in app.py at all.
+DISAGREEMENT_PATIENT = "Patient #3"
 
 
 def test_app_file_exists():
@@ -126,10 +136,11 @@ def test_app_renders_expected_content():
         "the not-for-clinical-use disclaimer is missing from the rendered app"
     )
 
-    # sidebar performance metrics rendered
-    metric_labels = [m.label for m in at.metric]
-    assert any("ROC-AUC" in label for label in metric_labels), metric_labels
-    assert any("Recall" in label for label in metric_labels), metric_labels
+    # sidebar performance metrics rendered, populated from eval_summary.json
+    sidebar_labels = [m.label for m in at.sidebar.metric]
+    assert "ROC-AUC" in sidebar_labels, sidebar_labels
+    assert any("Recall" in label for label in sidebar_labels), sidebar_labels
+    assert any("Precision" in label for label in sidebar_labels), sidebar_labels
 
     # the CI tooltip rendered as a literal percent, not a mangled format spec
     ci_helps = [m.help for m in at.metric if m.help]
@@ -150,9 +161,48 @@ def test_predict_button_produces_a_probability():
 
     metric_labels = [m.label for m in at.metric]
     assert any("Predicted probability" in label for label in metric_labels), metric_labels
+    assert any("Call @ default threshold" in label for label in metric_labels), metric_labels
 
     proba = next(
         m.value for m in at.metric if "Predicted probability" in m.label
     )
     pct = float(str(proba).rstrip("%"))
     assert 0.0 <= pct <= 100.0, proba
+
+
+@requires_artifacts
+def test_threshold_disagreement_patient_renders_warning():
+    """Exercise the sidebar 'load an example patient' path, then Predict, using
+    a patient whose probability falls in the band where the default and
+    validation-tuned thresholds disagree -- a code path none of the other
+    tests reach.
+    """
+    at = _run_app()
+    assert not at.exception
+
+    selectbox = at.sidebar.selectbox[0]
+    assert DISAGREEMENT_PATIENT in selectbox.options, (
+        f"Expected {DISAGREEMENT_PATIENT} in the example-patient dropdown -- "
+        "if the train/test split changed, pick a new patient id whose "
+        "predicted probability falls between the default and tuned "
+        "thresholds (see eval_summary.json) and update DISAGREEMENT_PATIENT."
+    )
+    selectbox.set_value(DISAGREEMENT_PATIENT).run()
+    assert not at.exception, f"app raised after selecting an example patient: {at.exception}"
+
+    # the "actual diagnosis" info banner should reflect the real test-set label
+    assert any("actual diagnosis" in info.value for info in at.info), (
+        "expected the loaded-patient info banner to appear"
+    )
+
+    at.button[0].click().run()
+    assert not at.exception, f"app raised on Predict for a loaded patient: {at.exception}"
+
+    # this patient is specifically chosen to disagree between thresholds,
+    # so the app's disagreement warning must render
+    assert any("thresholds disagree" in info.value for info in at.info), (
+        "expected the default/tuned threshold disagreement banner to render "
+        f"for {DISAGREEMENT_PATIENT}, which was chosen because it sits in that "
+        "band -- if this fails, either the model/split changed or the "
+        "disagreement-banner logic in app.py regressed."
+    )
