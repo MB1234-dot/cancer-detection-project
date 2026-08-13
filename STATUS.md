@@ -11,12 +11,13 @@ a new session never has to reconstruct where things stand.
 
 | | |
 |---|---|
-| Local `HEAD` | `fb30e50` |
-| `origin/main` | `fb30e50` |
+| Local `HEAD` | `a13db57` |
+| `origin/main` | `a13db57` |
 | In sync? | Yes — verified by fresh clone, not by push output |
 | Live app | https://cancer-detection-project.streamlit.app/ |
-| Live app verified? | See "Open watch item" below |
-| Test suite | 25 passed, verified against a fresh clone of the public repo |
+| Live app verified? | **Yes** — loaded cleanly after the `requirements.txt` pin took effect on this deploy. See "What is verified, and how" below. |
+| CI on `a13db57` | **Passed** — first run installing from `requirements.lock`, full pipeline + all 25 tests. See below. |
+| Test suite | 25 passed, verified both in CI and against a fresh clone of the public repo |
 
 ## What is verified, and how
 
@@ -40,15 +41,30 @@ result.
 - **The non-inferiority decision reproduces** — `src/feature_analysis.py`
   re-run gives Nadeau-Bengio one-sided p=0.0232, matching the documented
   0.023, and regenerates identical artifacts.
+- **The live app loads after the `requirements.txt` pin** — this was the one
+  change in the `fb30e50`/`a13db57` push that could have broken the
+  deployment, since Streamlit Community Cloud only reads `requirements.txt`
+  and this push pinned it to exact versions for the first time. Checked
+  directly in a browser: the app renders (title, disclaimer banner, input
+  form) with no stack trace.
+- **CI on `a13db57` passed, under the pinned lockfile** — checked on
+  GitHub, not inferred from the push succeeding. Run
+  [#5](https://github.com/MB1234-dot/cancer-detection-project/actions/runs/31680362983):
+  **Success**, 10m 36s total. Both jobs green — `test` (5m 54s: installs from
+  `requirements.lock`, regenerates the pipeline, then runs the full suite
+  including `tests/test_app.py`) and `docker-build` (4m 29s: builds the image
+  and smoke-tests the container). This is the first CI run under the pinned
+  lockfile, so a green result demonstrates the reproducibility claim rather
+  than just asserting it. Two informational warnings only (Node.js 20 →  24
+  runner deprecation notice on `actions/checkout`/`actions/setup-python`),
+  not failures.
 
 ## Open watch item
 
-**`requirements.txt` is now pinned to exact versions, and that is the file
-Streamlit Community Cloud reads.** The live app will reinstall dependencies
-on this deploy. Confirm it still loads after this push — this is the one
-change in the batch that can break the deployment. If it fails, the app logs
-are under "Manage app" in the Streamlit Cloud dashboard, and the most likely
-cause is a pinned version unavailable for Streamlit Cloud's Python runtime.
+None currently. The `requirements.txt` pin (the one change in the last push
+that could have broken the deployment) has been confirmed live, and CI has
+confirmed green under the pinned lockfile — see "What is verified, and how"
+above.
 
 ## History note: how the round-three work was nearly lost
 
@@ -69,15 +85,10 @@ doesn't exist.**
 
 ## Next steps
 
-Nothing is blocking. In rough priority order:
+Nothing is blocking. Both post-deploy checks from the last round are done and
+green (live app, CI on `a13db57`).
 
-1. **Confirm the live app after this deploy** (see Open watch item).
-2. **Check the CI run** on this push — `.github/workflows/ci.yml` now installs
-   from `requirements.lock` and runs the full pipeline plus all 25 tests,
-   including `tests/test_app.py`. This is the first run under the pinned
-   lockfile; if it goes green, the reproducibility claim is demonstrated
-   rather than asserted.
-3. **Optional, low value:** a fourth review round has diminishing returns.
+1. **Optional, low value:** a fourth review round has diminishing returns.
    Round three's most important finding was a process failure (unpushed
    commits), not a code bug, and that gap is now closed by this file plus the
    verification habit. Don't start another round without a specific reason.
